@@ -39,6 +39,41 @@ async function lookupCIK(ticker) {
   return entry ? String(entry.cik_str).padStart(10, "0") : null;
 }
 
+const ISIN_RE = /^[A-Z]{2}[A-Z0-9]{10}$/;
+
+function normalizeForTitleMatch(name) {
+  return name
+    .toUpperCase()
+    .replace(/\s+(INC\.?|CORP\.?|CO\.?|LTD\.?|PLC|SE|AG|ADR|CLASS\s+[ABC]|[ABC])$/, "")
+    .replace(/[^A-Z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function lookupCIKByDisplayName(displayName) {
+  const map = await getTickerMap();
+  if (!map) return null;
+  const needle = normalizeForTitleMatch(displayName);
+  if (!needle) return null;
+
+  let bestCIK = null;
+  let bestScore = -1;
+
+  for (const entry of Object.values(map)) {
+    const title = normalizeForTitleMatch(entry.title || "");
+    if (!title) continue;
+    if (title === needle || title.startsWith(needle)) {
+      const score = title === needle ? 2 : 1;
+      if (score > bestScore) {
+        bestScore = score;
+        bestCIK = String(entry.cik_str).padStart(10, "0");
+      }
+    }
+  }
+
+  return bestCIK;
+}
+
 function extractSeries(facts, ...concepts) {
   for (const concept of concepts) {
     const data = facts?.["us-gaap"]?.[concept]?.units?.USD;
@@ -112,8 +147,14 @@ function extractFinancials(facts) {
   };
 }
 
-export async function enrichCompany(ticker) {
-  const cik = await lookupCIK(ticker);
+export async function enrichCompany(ticker, displayName) {
+  let cik;
+  if (ISIN_RE.test(ticker)) {
+    cik = displayName ? await lookupCIKByDisplayName(displayName) : null;
+  } else {
+    cik = await lookupCIK(ticker);
+    if (!cik && displayName) cik = await lookupCIKByDisplayName(displayName);
+  }
   if (!cik) return null;
 
   const [submissions, facts] = await Promise.all([
@@ -153,8 +194,8 @@ export async function enrichCompany(ticker) {
     }
   }
 
-  if (facts) {
-    result.financials = extractFinancials(facts);
+  if (facts?.facts) {
+    result.financials = extractFinancials(facts.facts);
   }
 
   return result;

@@ -594,7 +594,7 @@ function parseScalableCSV(text) {
   const positions = new Map(); // isin → { name, quantity, avgPrice }
 
   for (const { datetime: _dt, isin, name, type, shares, price } of trades) {
-    if (!positions.has(isin)) positions.set(isin, { name, quantity: 0, avgPrice: 0 });
+    if (!positions.has(isin)) positions.set(isin, { name, isin, quantity: 0, avgPrice: 0 });
     const pos = positions.get(isin);
     pos.name = name; // keep updating so we end up with the most recent name
 
@@ -614,6 +614,7 @@ function parseScalableCSV(text) {
     .filter(p => p.quantity > 0.0001)
     .map(p => ({
       asset: p.name,
+      isin: p.isin,
       quantity: Math.round(p.quantity * 10000) / 10000,
       avgPrice: Math.round(p.avgPrice * 100) / 100,
       markPrice: Math.round(p.avgPrice * 100) / 100,
@@ -881,10 +882,16 @@ function getAuthorName() {
 
 function buildExposureSnapshot(positions) {
   const exposures = computeExposureMap(positions);
+  const isinMap = new Map(positions.filter(p => p.isin).map(p => [p.asset, p.isin]));
   return [...exposures.entries()]
     .filter(([, pct]) => pct > 0)
     .sort((a, b) => b[1] - a[1])
-    .map(([asset, exposure]) => ({ asset, exposure: roundExposure(exposure) }));
+    .map(([asset, exposure]) => {
+      const entry = { asset, exposure: roundExposure(exposure) };
+      const isin = isinMap.get(asset);
+      if (isin) entry.isin = isin;
+      return entry;
+    });
 }
 
 function createImportEvent({ author, positions, source }) {
@@ -1095,7 +1102,10 @@ function renderFeed() {
       const asset = typeof entry?.asset === "string" ? entry.asset : "";
       const exposure = formatExposure(entry?.exposure);
       if (!asset) return exposure;
-      return `<a href="/company/${encodeURIComponent(asset)}" class="ticker-link" title="View ${escapeHtml(asset)} company profile">${escapeHtml(asset)}</a> ${escapeHtml(exposure)}`;
+      const companyId = entry?.isin
+        ? `${entry.isin}?name=${encodeURIComponent(asset)}`
+        : encodeURIComponent(asset);
+      return `<span class="feed-inline-holding"><a href="/company/${companyId}" class="ticker-pill-link" title="View ${escapeHtml(asset)} company profile">${escapeHtml(asset)}</a><span class="feed-inline-pct">${escapeHtml(exposure)}</span></span>`;
     }).join(" · ");
   };
 
@@ -1649,6 +1659,7 @@ function deriveMemberPositions(signals) {
 
     if (signal.kind === "import" || signal.kind === "presence") {
       m.positions = new Map((signal.snapshot || []).map((entry) => [entry.asset, entry.exposure]));
+      m.isinMap = new Map((signal.snapshot || []).filter(e => e.isin).map((entry) => [entry.asset, entry.isin]));
       continue;
     }
 
@@ -1661,11 +1672,12 @@ function deriveMemberPositions(signals) {
 function deriveCollectiveCompanies(memberState) {
   const companies = new Map();
 
-  for (const [, { positions, lastActive }] of memberState.entries()) {
+  for (const [, { positions, lastActive, isinMap = new Map() }] of memberState.entries()) {
     for (const [asset, exposure] of positions.entries()) {
       if (!companies.has(asset)) {
         companies.set(asset, {
           ticker: asset,
+          isin: isinMap.get(asset) || null,
           holderCount: 0,
           totalExposure: 0,
           lastActive,
@@ -1673,6 +1685,7 @@ function deriveCollectiveCompanies(memberState) {
       }
 
       const company = companies.get(asset);
+      if (!company.isin && isinMap.has(asset)) company.isin = isinMap.get(asset);
       company.holderCount += 1;
       company.totalExposure += Number(exposure) || 0;
       if (!company.lastActive || new Date(lastActive || 0) > new Date(company.lastActive || 0)) {
@@ -1703,7 +1716,7 @@ function renderCompanies() {
   }
 
   els.companiesList.innerHTML = companies.map((company) => `
-    <a class="company-card" href="/company/${encodeURIComponent(company.ticker)}">
+    <a class="company-card" href="/company/${company.isin ? `${company.isin}?name=${encodeURIComponent(company.ticker)}` : encodeURIComponent(company.ticker)}">
       <div class="company-card-head">
         <div>
           <div class="company-card-ticker">${escapeHtml(company.ticker)}</div>

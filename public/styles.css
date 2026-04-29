@@ -1123,6 +1123,51 @@ button .material-symbols-outlined { font-size: 17px; }
 .feed-exposure { display: block; font-size: 0.8rem; color: var(--muted); margin-top: 0.12rem; }
 .move-size { color: var(--secondary-text); }
 .feed-note { font-size: 0.8rem; color: var(--muted); font-style: italic; }
+.feed-inline-holding {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  margin-right: 0.1rem;
+}
+
+.ticker-pill-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.45rem;
+  padding: 0.08rem 0.5rem;
+  border-radius: 9999px;
+  background: rgba(0, 226, 144, 0.08);
+  border: 1px solid rgba(0, 226, 144, 0.2);
+  color: var(--accent-dim);
+  text-decoration: none;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 0.69rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.ticker-pill-link:hover {
+  color: var(--accent);
+  border-color: rgba(0, 226, 144, 0.34);
+  background: rgba(0, 226, 144, 0.12);
+  text-decoration: none;
+}
+
+.ticker-pill-link:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(0, 226, 144, 0.16);
+}
+
+.feed-inline-pct {
+  color: var(--text);
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 0.74rem;
+  font-weight: 600;
+  font-style: normal;
+}
 .feed-meta { font-size: 0.74rem; color: var(--outline); }
 
 .feed-empty {

@@ -1,4 +1,5 @@
-const ticker = location.pathname.split("/").filter(Boolean)[1]?.toUpperCase() || "";
+const ticker = decodeURIComponent(location.pathname.split("/").filter(Boolean)[1] || "").toUpperCase();
+const displayName = new URLSearchParams(location.search).get("name") || "";
 
 if (!ticker) {
   document.getElementById("heroName").textContent = "No ticker in URL";
@@ -10,6 +11,7 @@ let pollingAttemptCount = 0;
 let aiStatusLoaded = false;
 
 const FINANCIALS_RETRYABLE_STATUSES = new Set([404, 425, 503, 504]);
+const FINANCIALS_NOT_FOUND_STATUS = 422;
 
 function getElement(id) {
   return document.getElementById(id);
@@ -57,7 +59,11 @@ function syncActionButtons({ hasFinancials = false, isLoading = false } = {}) {
 }
 
 async function ensureCompanyRegistered(force = false) {
-  const registerResponse = await fetch(`/api/companies/${encodeURIComponent(ticker)}/register${force ? "?force=1" : ""}`, {
+  const params = new URLSearchParams();
+  if (force) params.set("force", "1");
+  if (displayName) params.set("name", displayName);
+  const qs = params.toString();
+  const registerResponse = await fetch(`/api/companies/${encodeURIComponent(ticker)}/register${qs ? `?${qs}` : ""}`, {
     method: "POST",
   });
 
@@ -184,6 +190,13 @@ async function loadCompanyPage() {
     promptText = null;
     renderFilings([]);
     syncActionButtons({ hasFinancials: false, isLoading: false });
+
+    if (response.status === FINANCIALS_NOT_FOUND_STATUS) {
+      setStatus("sec", "error", "SEC status: not found");
+      setPendingState(payload?.error || "No SEC data found for this ticker.", true);
+      showToast(payload?.error || "No SEC data found for this ticker.");
+      return;
+    }
 
     if (FINANCIALS_RETRYABLE_STATUSES.has(response.status)) {
       pollingAttemptCount += 1;

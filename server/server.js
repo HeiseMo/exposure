@@ -201,12 +201,14 @@ app.post("/api/companies/:ticker/register", (req, res) => {
   const force = req.query.force === "1";
 
   if (force || !company.enrichedAt) {
+    const displayName = typeof req.query.name === "string" ? req.query.name.slice(0, 120) : undefined;
     setImmediate(async () => {
       try {
-        const data = await enrichCompany(ticker);
-        if (data) store.upsertCompany(ticker, data);
+        const data = await enrichCompany(ticker, displayName);
+        store.upsertCompany(ticker, data ?? {});
       } catch (err) {
         console.warn(`SEC enrichment failed for ${ticker}:`, err.message);
+        store.upsertCompany(ticker, {});
       }
     });
   }
@@ -219,7 +221,8 @@ app.get("/api/companies/:ticker/financials", (req, res) => {
   if (!ticker) return res.status(400).json({ error: "Invalid ticker" });
   const company = store.getCompany(ticker);
   if (!company) return res.status(404).json({ error: "Company not found. Register it first." });
-  if (!company.financials) return res.status(404).json({ error: "Financial data not yet available. Check back after enrichment." });
+  if (!company.enrichedAt) return res.status(404).json({ error: "Financial data not yet available. Check back after enrichment." });
+  if (!company.financials) return res.status(422).json({ error: "No SEC financial data found for this ticker. It may not be a publicly traded US company." });
   const prompt = buildLLMPrompt(ticker, company);
   res.json({ ticker, financials: company.financials, filings: company.filings, prompt });
 });
