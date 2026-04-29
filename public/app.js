@@ -1109,7 +1109,7 @@ function renderFeed() {
         line.innerHTML = `<strong>${escapeHtml(signal.author)}</strong> synced into the circle.`;
         note.textContent = top ? `Current visible positions: ${top}` : "No holdings shared yet.";
       } else {
-        tickerBadge.textContent = signal.asset;
+        tickerBadge.innerHTML = `<a href="/company/${encodeURIComponent(signal.asset)}" class="ticker-link" title="View ${escapeHtml(signal.asset)} company profile">${escapeHtml(signal.asset)}</a>`;
         line.innerHTML = `<strong>${escapeHtml(signal.author)}</strong> ${escapeHtml(signal.action.toLowerCase())}${signal.moveSize ? ` <span class="move-size">by ${escapeHtml(signal.moveSize)}</span>` : ""}. <span class="feed-exposure">Now: <strong class="accent-dim">${escapeHtml(formatExposure(signal.newExposure))}</strong></span>`;
         note.textContent = signal.note || "";
       }
@@ -1513,6 +1513,7 @@ async function syncFeed() {
     updateLastSyncedLabel();
     toast("Synced encrypted percentage feed.");
     refreshCircleState();
+    registerSignalTickers(storage.signals);
   } catch (error) {
     console.warn("Sync failed", error);
     toast("Sync failed. Check that you opened the app from the server URL and that the server is reachable.");
@@ -1928,6 +1929,20 @@ function toBase64(bytes) {
 
 function fromBase64(value) {
   return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+}
+
+const _registeredTickers = new Set();
+
+function registerSignalTickers(signals) {
+  const tickers = signals
+    .filter((s) => s.kind === "trade" && typeof s.asset === "string" && s.asset.length > 0)
+    .map((s) => s.asset.toUpperCase());
+
+  for (const ticker of tickers) {
+    if (_registeredTickers.has(ticker)) continue;
+    _registeredTickers.add(ticker);
+    fetch(`/api/companies/${encodeURIComponent(ticker)}/register`, { method: "POST" }).catch(() => {});
+  }
 }
 
 function toast(message) {

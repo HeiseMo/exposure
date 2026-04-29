@@ -6,8 +6,19 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { createStore, validateSettings } from "./store.js";
+import { enrichCompany } from "./sec.js";
+import { readFileSync } from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const REPORT_TEMPLATE = (() => {
+  try {
+    return readFileSync(path.join(__dirname, "FINANCEREPORT.md"), "utf8");
+  } catch {
+    return "";
+  }
+})();
+
 const root = path.resolve(__dirname, "..");
 const publicDir = path.join(root, "public");
 const dataDir = process.env.DATA_DIR || path.join(__dirname, "data");
@@ -128,6 +139,122 @@ app.get("/api/groups/:groupId/settings/history", (req, res) => {
   });
 });
 
+// ── Company endpoints ──────────────────────────────────────────────────────
+
+app.get("/api/companies/:ticker", (req, res) => {
+  const ticker = normalizeTicker(req.params.ticker);
+  if (!ticker) return res.status(400).json({ error: "Invalid ticker" });
+  const company = store.getCompany(ticker) || { ticker, enrichedAt: null };
+  const reports = store.listCompanyReports(ticker);
+  res.json({ company, reports });
+});
+
+app.post("/api/companies/:ticker/register", (req, res) => {
+  const ticker = normalizeTicker(req.params.ticker);
+  if (!ticker) return res.status(400).json({ error: "Invalid ticker" });
+  store.ensureCompany(ticker);
+  const company = store.getCompany(ticker);
+
+  if (!company.enrichedAt) {
+    setImmediate(async () => {
+      try {
+        const data = await enrichCompany(ticker);
+        if (data) store.upsertCompany(ticker, data);
+      } catch (err) {
+        console.warn(`SEC enrichment failed for ${ticker}:`, err.message);
+      }
+    });
+  }
+
+  res.status(201).json({ company });
+});
+
+app.get("/api/companies/:ticker/financials", (req, res) => {
+  const ticker = normalizeTicker(req.params.ticker);
+  if (!ticker) return res.status(400).json({ error: "Invalid ticker" });
+  const company = store.getCompany(ticker);
+  if (!company) return res.status(404).json({ error: "Company not found. Register it first." });
+  if (!company.financials) return res.status(404).json({ error: "Financial data not yet available. Check back after enrichment." });
+  const prompt = buildLLMPrompt(ticker, company);
+  res.json({ ticker, financials: company.financials, filings: company.filings, prompt });
+});
+
+app.post("/api/companies/:ticker/reports", (req, res) => {
+  const ticker = normalizeTicker(req.params.ticker);
+  if (!ticker) return res.status(400).json({ error: "Invalid ticker" });
+
+  const { title, contentHtml, source } = req.body || {};
+  if (typeof contentHtml !== "string" || contentHtml.length < 10) {
+    return res.status(400).json({ error: "contentHtml is required" });
+  }
+
+  store.ensureCompany(ticker);
+  const id = store.addCompanyReport(ticker, {
+    title: typeof title === "string" ? title.slice(0, 200) : `${ticker} Analysis`,
+    contentHtml,
+    source: typeof source === "string" ? source.slice(0, 100) : "manual",
+  });
+
+  res.status(201).json({ id, ticker });
+});
+
+app.post("/api/companies/:ticker/reports/generate", async (req, res) => {
+  const ticker = normalizeTicker(req.params.ticker);
+  if (!ticker) return res.status(400).json({ error: "Invalid ticker" });
+
+  const lmUrl = process.env.LM_STUDIO_URL || "http://localhost:1234";
+  const model = process.env.LM_STUDIO_MODEL || "local-model";
+
+  const company = store.getCompany(ticker);
+  if (!company) return res.status(404).json({ error: "Company not found. Register it first." });
+
+  const prompt = buildLLMPrompt(ticker, company);
+
+  try {
+    const llmRes = await fetch(`${lmUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        max_tokens: 8192,
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    if (!llmRes.ok) {
+      const text = await llmRes.text().catch(() => "");
+      return res.status(502).json({ error: `LM Studio returned ${llmRes.status}`, detail: text.slice(0, 300) });
+    }
+
+    const data = await llmRes.json();
+    let contentHtml = data.choices?.[0]?.message?.content ?? "";
+    contentHtml = contentHtml.replace(/^```html\s*/i, "").replace(/\s*```$/i, "").trim();
+
+    if (!contentHtml) return res.status(502).json({ error: "LM Studio returned empty content" });
+
+    const id = store.addCompanyReport(ticker, {
+      title: `${ticker} AI Analysis`,
+      contentHtml,
+      source: `lm-studio:${model}`,
+    });
+
+    res.status(201).json({ id, ticker });
+  } catch (err) {
+    if (err.name === "TimeoutError") return res.status(504).json({ error: "LM Studio timed out after 120s" });
+    res.status(503).json({ error: "Could not reach LM Studio", detail: err.message });
+  }
+});
+
+app.get("/company/:ticker", (_req, res) => {
+  res.sendFile(path.join(publicDir, "company.html"), {
+    headers: { "Cache-Control": "public, max-age=300" },
+  });
+});
+
+// ── Circle endpoints ───────────────────────────────────────────────────────
+
 app.get("/node/:groupId", (_req, res) => {
   res.sendFile(path.join(publicDir, "node.html"), {
     headers: { "Cache-Control": "public, max-age=300" },
@@ -150,6 +277,58 @@ app.listen(port, () => {
   console.log(`Exposure running on http://localhost:${port}`);
   console.log(`SQLite store: ${dbPath}`);
 });
+
+function normalizeTicker(value) {
+  const t = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9.]/g, "");
+  return t.length > 0 && t.length <= 12 ? t : null;
+}
+
+function formatMoney(val) {
+  if (val == null) return "N/A";
+  const abs = Math.abs(val);
+  const sign = val < 0 ? "-" : "";
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(1)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
+  return `${sign}$${(abs / 1e3).toFixed(0)}K`;
+}
+
+function buildLLMPrompt(ticker, company) {
+  const { name, sector, exchange, financials: f } = company;
+
+  const annualTable = (f?.annualRevenue ?? []).map((r, i) => {
+    const gp = f?.annualGrossProfit?.[i];
+    const op = f?.annualOperatingIncome?.[i];
+    const ni = f?.annualNetIncome?.[i];
+    const ocf = f?.annualOperatingCashFlow?.[i];
+    const capex = f?.annualCapex?.[i];
+    const gpMargin = r.value && gp?.value ? ` (${((gp.value / r.value) * 100).toFixed(1)}% margin)` : "";
+    return `  ${r.year}: Revenue ${formatMoney(r.value)}, Gross Profit ${formatMoney(gp?.value)}${gpMargin}, Operating Income ${formatMoney(op?.value)}, Net Income ${formatMoney(ni?.value)}, Operating Cash Flow ${formatMoney(ocf?.value)}, CapEx ${formatMoney(capex?.value)}`;
+  }).join("\n");
+
+  const qTable = (f?.quarterlyRevenue ?? []).slice(-4).map((q) =>
+    `  ${q.period}: Revenue ${formatMoney(q.value)}`
+  ).join("\n");
+
+  const templateSection = REPORT_TEMPLATE
+    ? `\n---\nREPORT STRUCTURE GUIDE (follow exactly):\n${REPORT_TEMPLATE}\n---\n`
+    : "";
+
+  return `You are a financial analyst. Generate a comprehensive investment analysis HTML report for ${name ?? ticker} (${ticker})${sector ? `, sector: ${sector}` : ""}${exchange ? `, exchange: ${exchange}` : ""}.
+${templateSection}
+ANNUAL FINANCIAL DATA (from SEC filings):
+${annualTable || "  No annual data available."}
+
+RECENT QUARTERLY REVENUE:
+${qTable || "  No quarterly data available."}
+
+LATEST BALANCE SHEET:
+  Cash: ${formatMoney(f?.latestCash)}
+  Total Assets: ${formatMoney(f?.latestAssets)}
+  Total Liabilities: ${formatMoney(f?.latestLiabilities)}
+  Net Assets: ${f?.latestAssets != null && f?.latestLiabilities != null ? formatMoney(f.latestAssets - f.latestLiabilities) : "N/A"}
+
+Output ONLY the HTML document. No markdown fences, no explanation.`;
+}
 
 function normalizeGroup(value) {
   const groupId = String(value || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");

@@ -24,6 +24,33 @@ class ExposureStore {
 
   initSchema() {
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS companies (
+        ticker TEXT PRIMARY KEY,
+        name TEXT,
+        sector TEXT,
+        exchange TEXT,
+        cik TEXT,
+        website TEXT,
+        filings_json TEXT,
+        financials_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        enriched_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS company_reports (
+        id TEXT PRIMARY KEY,
+        ticker TEXT NOT NULL REFERENCES companies(ticker) ON DELETE CASCADE,
+        report_type TEXT NOT NULL DEFAULT 'sec_analysis',
+        title TEXT,
+        content_html TEXT NOT NULL,
+        source TEXT,
+        generated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_company_reports_ticker_generated
+        ON company_reports(ticker, generated_at DESC);
+
       CREATE TABLE IF NOT EXISTS circles (
         group_id TEXT PRIMARY KEY,
         created_at TEXT NOT NULL,
@@ -271,6 +298,92 @@ class ExposureStore {
       reason: row.reason,
       settings: parseSettings(row.settings_json),
     }));
+  }
+
+  ensureCompany(ticker) {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO companies (ticker, created_at, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(ticker) DO NOTHING
+    `).run(ticker.toUpperCase(), now, now);
+  }
+
+  upsertCompany(ticker, data) {
+    const now = new Date().toISOString();
+    this.ensureCompany(ticker);
+    this.db.prepare(`
+      UPDATE companies
+      SET name = COALESCE(?, name),
+          sector = COALESCE(?, sector),
+          exchange = COALESCE(?, exchange),
+          cik = COALESCE(?, cik),
+          website = COALESCE(?, website),
+          filings_json = COALESCE(?, filings_json),
+          financials_json = COALESCE(?, financials_json),
+          updated_at = ?,
+          enriched_at = ?
+      WHERE ticker = ?
+    `).run(
+      data.name ?? null,
+      data.sector ?? null,
+      data.exchange ?? null,
+      data.cik ?? null,
+      data.website ?? null,
+      data.filings ? JSON.stringify(data.filings) : null,
+      data.financials ? JSON.stringify(data.financials) : null,
+      now,
+      now,
+      ticker.toUpperCase()
+    );
+  }
+
+  getCompany(ticker) {
+    const row = this.db.prepare(`
+      SELECT ticker, name, sector, exchange, cik, website,
+             filings_json, financials_json, created_at, updated_at, enriched_at
+      FROM companies WHERE ticker = ?
+    `).get(ticker.toUpperCase());
+    if (!row) return null;
+    return {
+      ticker: row.ticker,
+      name: row.name,
+      sector: row.sector,
+      exchange: row.exchange,
+      cik: row.cik,
+      website: row.website,
+      filings: row.filings_json ? JSON.parse(row.filings_json) : [],
+      financials: row.financials_json ? JSON.parse(row.financials_json) : null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      enrichedAt: row.enriched_at,
+    };
+  }
+
+  listCompanyReports(ticker) {
+    return this.db.prepare(`
+      SELECT id, ticker, report_type, title, content_html, source, generated_at
+      FROM company_reports WHERE ticker = ?
+      ORDER BY generated_at DESC
+    `).all(ticker.toUpperCase()).map(row => ({
+      id: row.id,
+      ticker: row.ticker,
+      reportType: row.report_type,
+      title: row.title,
+      contentHtml: row.content_html,
+      source: row.source,
+      generatedAt: row.generated_at,
+    }));
+  }
+
+  addCompanyReport(ticker, { title, contentHtml, source, reportType = 'sec_analysis' }) {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO company_reports (id, ticker, report_type, title, content_html, source, generated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, ticker.toUpperCase(), reportType, title ?? null, contentHtml, source ?? null, now);
+    return id;
   }
 
   async migrateLegacyGroupFiles() {
