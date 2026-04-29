@@ -629,7 +629,6 @@ function parseScalableCSV(text) {
 function confirmScalableImport(mode) {
   if (!_pendingScalablePositions?.length) return;
 
-  const wasEmpty = storage.positions.length === 0;
   const author = getAuthorName();
 
   const next = mode === "replace"
@@ -637,8 +636,9 @@ function confirmScalableImport(mode) {
     : mergeImportedPositions(storage.positions, _pendingScalablePositions);
 
   storage.positions = sortPositions(next);
-  if (wasEmpty && next.length) {
-    storage.signals = [createImportEvent({ author, positions: next, source: "scalable" }), ...storage.signals];
+  if (next.length) {
+    const importEvent = createImportEvent({ author, positions: next, source: "scalable" });
+    storage.signals = [importEvent, ...storage.signals.filter(s => !(s.kind === "import" && s.author === author))];
     renderFeed();
   }
   _pendingScalablePositions = null;
@@ -741,7 +741,6 @@ function importPortfolio(mode) {
   const rows = parseImportedPositions(els.importPortfolio.value);
   if (!rows.length) return toast("Add at least one holding to import.");
 
-  const wasEmpty = storage.positions.length === 0;
   const author = getAuthorName();
 
   const nextPositions = mode === "replace"
@@ -749,8 +748,9 @@ function importPortfolio(mode) {
     : mergeImportedPositions(storage.positions, rows);
 
   storage.positions = sortPositions(nextPositions);
-  if (wasEmpty && nextPositions.length) {
-    storage.signals = [createImportEvent({ author, positions: nextPositions, source: "manual" }), ...storage.signals];
+  if (nextPositions.length) {
+    const importEvent = createImportEvent({ author, positions: nextPositions, source: "manual" });
+    storage.signals = [importEvent, ...storage.signals.filter(s => !(s.kind === "import" && s.author === author))];
     renderFeed();
   }
   els.importPortfolio.value = "";
