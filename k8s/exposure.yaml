@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: exposure
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exposure
+  namespace: exposure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: exposure
+  template:
+    metadata:
+      labels:
+        app: exposure
+    spec:
+      containers:
+        - name: exposure
+          image: docker.io/library/exposure-exposure:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: PORT
+              value: "3000"
+            - name: DATA_DIR
+              value: "/data"
+            - name: MAX_EVENTS_PER_GROUP
+              value: "5000"
+          volumeMounts:
+            - name: exposure-data
+              mountPath: /data
+      volumes:
+        - name: exposure-data
+          persistentVolumeClaim:
+            claimName: exposure-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: exposure
+  namespace: exposure
+spec:
+  selector:
+    app: exposure
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: exposure-data
+  namespace: exposure
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: exposure
+  namespace: exposure
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: exposure.timurjamestanurhan.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: exposure
+                port:
+                  name: http
+  tls:
+    - hosts:
+        - exposure.timurjamestanurhan.com
+      secretName: exposure-certmanager-tls
