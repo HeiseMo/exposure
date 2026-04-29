@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Exposure - Activity Feed</title>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Google Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Theme Configuration -->
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-secondary-container": "#b4b5b7",
+                        "tertiary-container": "#d0e1fb",
+                        "surface-container-high": "#282a2c",
+                        "on-primary-fixed-variant": "#005231",
+                        "on-error": "#690005",
+                        "on-surface": "#e2e2e5",
+                        "surface-container-low": "#1a1c1e",
+                        "surface-container-highest": "#333537",
+                        "on-tertiary-fixed": "#0b1c30",
+                        "on-tertiary": "#213145",
+                        "secondary-fixed": "#e2e2e5",
+                        "error": "#ffb4ab",
+                        "on-secondary": "#2f3133",
+                        "surface": "#121416",
+                        "on-secondary-fixed": "#1a1c1e",
+                        "surface-variant": "#333537",
+                        "on-tertiary-fixed-variant": "#38485d",
+                        "outline": "#849588",
+                        "inverse-primary": "#006d43",
+                        "surface-bright": "#38393c",
+                        "primary-fixed-dim": "#00e290",
+                        "tertiary-fixed-dim": "#b7c8e1",
+                        "inverse-surface": "#e2e2e5",
+                        "secondary": "#c6c6c9",
+                        "on-surface-variant": "#b9cbbd",
+                        "background": "#121416",
+                        "surface-dim": "#121416",
+                        "outline-variant": "#3a4a3f",
+                        "secondary-fixed-dim": "#c6c6c9",
+                        "on-secondary-fixed-variant": "#454749",
+                        "on-primary": "#003920",
+                        "on-primary-container": "#007146",
+                        "error-container": "#93000a",
+                        "on-background": "#e2e2e5",
+                        "on-primary-fixed": "#002111",
+                        "on-error-container": "#ffdad6",
+                        "primary": "#f5fff5",
+                        "primary-fixed": "#52ffac",
+                        "primary-container": "#00ffa3",
+                        "surface-tint": "#00e290",
+                        "surface-container": "#1e2022",
+                        "secondary-container": "#454749",
+                        "inverse-on-surface": "#2f3133",
+                        "on-tertiary-container": "#54647a",
+                        "surface-container-lowest": "#0c0e10",
+                        "tertiary-fixed": "#d3e4fe",
+                        "tertiary": "#fdfcff"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "margin-desktop": "40px",
+                        "stack-md": "16px",
+                        "gutter": "16px",
+                        "margin-mobile": "20px",
+                        "unit": "4px",
+                        "stack-sm": "8px",
+                        "stack-lg": "32px"
+                    },
+                    "fontFamily": {
+                        "label-caps": ["Space Grotesk", "sans-serif"],
+                        "data-mono": ["Space Grotesk", "monospace"],
+                        "body-md": ["Inter", "sans-serif"],
+                        "body-lg": ["Inter", "sans-serif"],
+                        "headline-lg": ["Space Grotesk", "sans-serif"],
+                        "headline-md": ["Space Grotesk", "sans-serif"]
+                    },
+                    "fontSize": {
+                        "label-caps": ["12px", { "lineHeight": "1.0", "letterSpacing": "0.1em", "fontWeight": "600" }],
+                        "data-mono": ["14px", { "lineHeight": "1.0", "fontWeight": "500" }],
+                        "body-md": ["16px", { "lineHeight": "1.5", "fontWeight": "400" }],
+                        "body-lg": ["18px", { "lineHeight": "1.6", "fontWeight": "400" }],
+                        "headline-lg": ["32px", { "lineHeight": "1.2", "letterSpacing": "-0.02em", "fontWeight": "700" }],
+                        "headline-md": ["24px", { "lineHeight": "1.3", "fontWeight": "600" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
+        .pt-safe { padding-top: env(safe-area-inset-top, 20px); }
+        
+        /* Subtle decrypted data pattern overlay */
+        .decrypted-pattern {
+            background-image: radial-gradient(var(--tw-colors-primary-fixed-dim) 0.5px, transparent 0.5px);
+            background-size: 8px 8px;
+            opacity: 0.03;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background min-h-screen flex flex-col font-body-md antialiased pt-14 pb-safe">
+<!-- Security Status Bar -->
+<div class="fixed top-14 left-0 w-full z-40 bg-surface-container-highest border-b border-surface-variant flex justify-center items-center py-unit gap-2 shadow-sm">
+<span class="material-symbols-outlined text-[14px] text-primary-fixed-dim" style="font-variation-settings: 'FILL' 1;">lock_open_right</span>
+<span class="font-label-caps text-label-caps text-primary-fixed-dim tracking-widest">AES-256 SESSION DECRYPTED</span>
+</div>
+<!-- Shared Component: TopAppBar -->
+<header class="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-5 h-14 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 text-emerald-400 font-['Space_Grotesk'] tracking-tight text-sm font-bold pt-safe">
+<button class="hover:bg-zinc-900 transition-colors duration-200 active:opacity-80 p-2 rounded flex items-center justify-center">
+<span class="material-symbols-outlined">encrypted</span>
+</button>
+<span class="font-mono text-emerald-400 tracking-widest font-black uppercase text-base">EXPOSURE</span>
+<button class="hover:bg-zinc-900 transition-colors duration-200 active:opacity-80 p-2 rounded flex items-center justify-center">
+<span class="material-symbols-outlined">sensors</span>
+</button>
+</header>
+<!-- Main Canvas -->
+<main class="flex-1 px-margin-mobile md:px-margin-desktop py-stack-lg mt-8 mb-16 max-w-4xl mx-auto w-full">
+<!-- Header Actions -->
+<div class="flex flex-row justify-between items-end mb-stack-lg border-b border-surface-variant pb-stack-md">
+<div>
+<h1 class="font-headline-md text-headline-md text-on-surface">Signal Log</h1>
+<p class="font-data-mono text-data-mono text-on-surface-variant mt-2 opacity-80">Syncing remote state vectors...</p>
+</div>
+<button class="bg-primary-container hover:bg-primary-fixed text-on-primary-container font-label-caps text-label-caps px-4 py-2 rounded flex items-center gap-2 transition-colors duration-200 active:scale-95 shadow-sm border border-transparent hover:border-primary-fixed">
+<span class="material-symbols-outlined text-[18px]">sync</span>
+                PULL BLOBS
+            </button>
+</div>
+<!-- Activity Feed List -->
+<div class="flex flex-col gap-stack-md relative">
+<!-- Connection Line (Visual behind items) -->
+<div class="absolute left-[38px] top-4 bottom-4 w-px bg-surface-variant hidden md:block -z-10"></div>
+<!-- Signal Item 1 -->
+<div class="bg-surface-container-low border border-surface-variant rounded-lg p-4 flex flex-col md:flex-row md:items-center gap-4 transition-all duration-200 hover:border-primary-fixed-dim relative overflow-hidden group">
+<div class="absolute inset-0 decrypted-pattern pointer-events-none"></div>
+<!-- Col 1: Ticker & Time -->
+<div class="flex flex-row md:flex-col justify-between items-center md:items-start md:w-32 shrink-0 z-10">
+<span class="border border-outline text-on-surface font-label-caps text-label-caps px-2 py-1 rounded bg-surface group-hover:border-primary-fixed-dim transition-colors">BLOOM</span>
+<span class="font-data-mono text-label-caps text-on-surface-variant mt-0 md:mt-2">14:23:01Z</span>
+</div>
+<!-- Col 2: Activity Data -->
+<div class="flex-1 font-body-md text-body-md text-on-surface z-10 border-l-0 md:border-l md:border-surface-variant md:pl-4 py-1">
+                    Sold <span class="font-data-mono text-on-surface font-bold">2.0%</span> of position holding. 
+                    <div class="mt-1 text-on-surface-variant text-sm font-data-mono">
+                        New exposure: <span class="text-primary-fixed-dim">1.5%</span>
+</div>
+</div>
+<!-- Col 3: Status -->
+<div class="flex items-center gap-1.5 text-primary-fixed-dim font-label-caps text-label-caps shrink-0 z-10 bg-surface-container-low px-2 py-1 rounded border border-outline-variant">
+<span class="material-symbols-outlined text-[14px]">lock_open</span>
+<span>DECRYPTED</span>
+</div>
+</div>
+<!-- Signal Item 2 -->
+<div class="bg-surface-container-low border border-surface-variant rounded-lg p-4 flex flex-col md:flex-row md:items-center gap-4 transition-all duration-200 hover:border-primary-fixed-dim relative overflow-hidden group">
+<div class="absolute inset-0 decrypted-pattern pointer-events-none"></div>
+<!-- Col 1: Ticker & Time -->
+<div class="flex flex-row md:flex-col justify-between items-center md:items-start md:w-32 shrink-0 z-10">
+<span class="border border-outline text-on-surface font-label-caps text-label-caps px-2 py-1 rounded bg-surface group-hover:border-primary-fixed-dim transition-colors">AURA</span>
+<span class="font-data-mono text-label-caps text-on-surface-variant mt-0 md:mt-2">09:12:44Z</span>
+</div>
+<!-- Col 2: Activity Data -->
+<div class="flex-1 font-body-md text-body-md text-on-surface z-10 border-l-0 md:border-l md:border-surface-variant md:pl-4 py-1">
+                    Acquired <span class="font-data-mono text-on-surface font-bold">5.0%</span> initial stake. 
+                    <div class="mt-1 text-on-surface-variant text-sm font-data-mono">
+                        New exposure: <span class="text-primary-fixed-dim">5.0%</span>
+</div>
+</div>
+<!-- Col 3: Status -->
+<div class="flex items-center gap-1.5 text-primary-fixed-dim font-label-caps text-label-caps shrink-0 z-10 bg-surface-container-low px-2 py-1 rounded border border-outline-variant">
+<span class="material-symbols-outlined text-[14px]">lock_open</span>
+<span>DECRYPTED</span>
+</div>
+</div>
+<!-- Signal Item 3 -->
+<div class="bg-surface-container-low border border-surface-variant rounded-lg p-4 flex flex-col md:flex-row md:items-center gap-4 transition-all duration-200 hover:border-primary-fixed-dim relative overflow-hidden group">
+<div class="absolute inset-0 decrypted-pattern pointer-events-none"></div>
+<!-- Col 1: Ticker & Time -->
+<div class="flex flex-row md:flex-col justify-between items-center md:items-start md:w-32 shrink-0 z-10">
+<span class="border border-outline text-on-surface font-label-caps text-label-caps px-2 py-1 rounded bg-surface group-hover:border-primary-fixed-dim transition-colors">NOVA</span>
+<span class="font-data-mono text-label-caps text-on-surface-variant mt-0 md:mt-2">YESTERDAY</span>
+</div>
+<!-- Col 2: Activity Data -->
+<div class="flex-1 font-body-md text-body-md text-on-surface z-10 border-l-0 md:border-l md:border-surface-variant md:pl-4 py-1">
+                    Automated portfolio rebalance executed.
+                    <div class="mt-1 text-on-surface-variant text-sm font-data-mono">
+                        New exposure: <span class="text-secondary-fixed">12.0%</span> (No change)
+                    </div>
+</div>
+<!-- Col 3: Status -->
+<div class="flex items-center gap-1.5 text-primary-fixed-dim font-label-caps text-label-caps shrink-0 z-10 bg-surface-container-low px-2 py-1 rounded border border-outline-variant">
+<span class="material-symbols-outlined text-[14px]">lock_open</span>
+<span>DECRYPTED</span>
+</div>
+</div>
+<!-- Encrypted Item (Locked state for contrast) -->
+<div class="bg-surface-container-lowest border border-surface-variant border-dashed rounded-lg p-4 flex items-center justify-center min-h-[80px] opacity-60">
+<div class="flex items-center gap-3 text-on-surface-variant font-data-mono text-label-caps">
+<span class="material-symbols-outlined">lock</span>
+                    ENCRYPTED BLOB WAITING FOR SYNC...
+                </div>
+</div>
+</div>
+</main>
+<!-- Shared Component: BottomNavBar -->
+<nav class="md:hidden fixed bottom-0 left-0 w-full z-50 flex justify-around items-center px-4 h-16 pb-safe border-t border-zinc-800 bg-zinc-950/90 backdrop-blur-xl">
+<!-- Active Tab: Activity -->
+<button class="flex flex-col items-center justify-center text-emerald-400 border-t-2 border-emerald-400 pt-1 active:scale-95 duration-100 ease-in-out w-full h-full">
+<span class="material-symbols-outlined mb-1">dynamic_feed</span>
+<span class="font-['Space_Grotesk'] text-[10px] uppercase font-semibold tracking-wider">Activity</span>
+</button>
+<!-- Inactive Tab: Signal -->
+<button class="flex flex-col items-center justify-center text-zinc-500 pt-1.5 hover:text-emerald-300 transition-colors active:scale-95 duration-100 ease-in-out w-full h-full border-t-2 border-transparent">
+<span class="material-symbols-outlined mb-1">add_box</span>
+<span class="font-['Space_Grotesk'] text-[10px] uppercase font-semibold tracking-wider">Signal</span>
+</button>
+<!-- Inactive Tab: Settings -->
+<button class="flex flex-col items-center justify-center text-zinc-500 pt-1.5 hover:text-emerald-300 transition-colors active:scale-95 duration-100 ease-in-out w-full h-full border-t-2 border-transparent">
+<span class="material-symbols-outlined mb-1">tune</span>
+<span class="font-['Space_Grotesk'] text-[10px] uppercase font-semibold tracking-wider">Settings</span>
+</button>
+</nav>
+</body></html>

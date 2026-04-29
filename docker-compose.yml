@@ -1,0 +1,16 @@
+services:
+  exposure:
+    build: .
+    container_name: exposure
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+      - DATA_DIR=/data
+      - MAX_EVENTS_PER_GROUP=5000
+    volumes:
+      - exposure-data:/data
+    ports:
+      - "3000:3000"
+
+volumes:
+  exposure-data:

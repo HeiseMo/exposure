@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Exposure</title>
+  <meta name="theme-color" content="#121416" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- Fixed topbar -->
+  <header class="topbar">
+    <button class="icon-btn" id="lockIconBtn" aria-label="lock node">
+      <span class="material-symbols-outlined">encrypted</span>
+    </button>
+    <span class="app-title font-grotesk">Exposure</span>
+    <div style="display:flex;align-items:center;gap:0.4rem;">
+      <button id="installBtn" class="ghost hidden" style="font-size:0.76rem;padding:0.3rem 0.65rem;">Install</button>
+      <!-- Desktop settings button (hidden on mobile) -->
+      <button id="desktopSettingsBtn" class="icon-btn desktop-only" aria-label="open settings">
+        <span class="material-symbols-outlined">tune</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Security status bar -->
+  <div class="security-bar">
+    <span class="material-symbols-outlined">lock</span>
+    <span>AES-256 &middot; All data decrypted client-side</span>
+  </div>
+
+  <!-- ══ ENTRY SCREEN ══ -->
+  <div id="entryView" class="entry-view">
+    <div class="entry-card">
+      <div class="entry-icon-wrap">
+        <span class="material-symbols-outlined">encrypted</span>
+      </div>
+      <h1 class="font-grotesk">EXPOSURE</h1>
+      <p class="entry-tagline">Private portfolio signals</p>
+
+      <div class="entry-fields">
+        <div>
+          <label for="entryGroupId">Group identifier</label>
+          <input id="entryGroupId" placeholder="hermit-deniz" autocomplete="off" spellcheck="false" />
+        </div>
+        <div>
+          <label for="entryPassphrase">Shared passphrase</label>
+          <div class="passphrase-wrap">
+            <span class="material-symbols-outlined passphrase-icon">key</span>
+            <input id="entryPassphrase" type="password" placeholder="••••••••••••••••" autocomplete="current-password" />
+          </div>
+        </div>
+      </div>
+
+      <button id="enterNodeBtn" class="btn-full">
+        <span class="material-symbols-outlined">arrow_forward</span>
+        ENTER NODE
+      </button>
+
+      <div class="entry-security-note">
+        <span class="material-symbols-outlined">lock</span>
+        AES-256-GCM &middot; PBKDF2-SHA256 &middot; Zero-knowledge — the passphrase never leaves this device.
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ DASHBOARD ══ -->
+  <main id="dashboard" class="hidden">
+    <div class="dashboard-grid">
+
+      <!-- Left column — Signal + Local Portfolio -->
+      <section id="tab-signal" class="tab-panel col-left">
+
+        <!-- Display name -->
+        <div class="card">
+          <label for="displayName">Your display name</label>
+          <input id="displayName" placeholder="Timur" autocomplete="nickname" />
+        </div>
+
+        <!-- Record move -->
+        <div class="card">
+          <div class="section-head">
+            <h3>Record local move</h3>
+            <button id="applyTradeBtn" class="primary" style="font-size:0.78rem;">
+              <span class="material-symbols-outlined">enhanced_encryption</span>
+              Post Signal
+            </button>
+          </div>
+          <div class="space-y">
+            <div class="form-grid-2">
+              <div>
+                <label for="tradeAsset">Asset</label>
+                <input id="tradeAsset" placeholder="ASML" autocapitalize="characters" spellcheck="false" />
+              </div>
+              <div>
+                <label>Action</label>
+                <div class="segment-group" id="tradeTypeGroup">
+                  <button type="button" class="segment-btn active" data-value="BUY">Bought</button>
+                  <button type="button" class="segment-btn" data-value="SELL">Sold</button>
+                </div>
+                <input type="hidden" id="tradeType" value="BUY" />
+              </div>
+              <div>
+                <label for="tradeQuantity">Shares</label>
+                <input id="tradeQuantity" inputmode="decimal" placeholder="5" />
+              </div>
+              <div>
+                <label for="tradePrice">Execution price</label>
+                <input id="tradePrice" inputmode="decimal" placeholder="925.50" />
+              </div>
+            </div>
+            <div>
+              <label for="markPrice">Mark price (optional)</label>
+              <input id="markPrice" inputmode="decimal" placeholder="Uses execution price if blank" />
+            </div>
+            <div>
+              <label for="note">Note for feed (optional)</label>
+              <input id="note" placeholder="Why did you do it?" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Portfolio summary (injected by JS) -->
+        <div id="portfolioSummaryHeader" class="portfolio-summary-header hidden"></div>
+
+        <!-- Local portfolio -->
+        <div class="card">
+          <div class="section-head">
+            <h3>Local portfolio</h3>
+            <button id="resetPortfolioBtn" class="ghost danger" style="font-size:0.74rem;padding:0.35rem 0.6rem;">
+              <span class="material-symbols-outlined">delete_forever</span>
+              Reset
+            </button>
+          </div>
+          <p id="portfolioSummary" class="small"></p>
+
+          <!-- Import -->
+          <div class="import-panel">
+            <label>Initial import &middot; local only</label>
+            <textarea id="importPortfolio" rows="3"
+              placeholder="ASML, 10, 915.2, 948.5&#10;AMZN, 5, 182.4"></textarea>
+            <p class="small">One line: asset, shares, avg price, optional mark price.</p>
+            <div class="row" style="margin-top:0.45rem;">
+              <button id="replaceImportBtn" class="secondary" style="font-size:0.76rem;">Replace</button>
+              <button id="mergeImportBtn" class="ghost" style="font-size:0.76rem;">Merge</button>
+            </div>
+          </div>
+
+          <div id="positions" class="positions" style="margin-top:0.65rem;"></div>
+        </div>
+
+      </section>
+
+      <!-- Right column — Group feed -->
+      <section id="tab-activity" class="tab-panel col-right">
+        <div class="tab-header">
+          <h2>Signal Log</h2>
+          <button id="syncBtn" class="primary" style="font-size:0.78rem;">
+            <span class="material-symbols-outlined">sync</span>
+            Pull Feed
+          </button>
+        </div>
+        <div id="feed" class="feed"></div>
+      </section>
+
+    </div><!-- end dashboard-grid -->
+  </main>
+
+  <!-- ══ SETTINGS PANEL (mobile: tab, desktop: sliding overlay) ══ -->
+  <div id="tab-settings" class="tab-panel settings-panel-wrap">
+    <div class="settings-panel-inner">
+
+      <!-- Desktop: panel header with close button -->
+      <div class="section-head desktop-only" style="margin-bottom:1rem;">
+        <h3>Configuration</h3>
+        <button id="closeSettingsBtn" class="icon-btn" aria-label="close settings">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+
+      <!-- Node identity -->
+      <div class="card">
+        <div class="field-label-caps">Node identity</div>
+        <div class="space-y">
+          <div>
+            <label for="groupId">Group name</label>
+            <input id="groupId" placeholder="hermit-deniz" />
+          </div>
+          <div>
+            <label for="passphrase">Shared passphrase</label>
+            <div class="passphrase-wrap">
+              <span class="material-symbols-outlined passphrase-icon">key</span>
+              <input id="passphrase" type="password" placeholder="••••••••••••••••" />
+              <button id="togglePassphraseBtn" aria-label="toggle passphrase visibility">
+                <span class="material-symbols-outlined">visibility_off</span>
+              </button>
+            </div>
+          </div>
+          <div>
+            <label for="rounding">Rounding precision</label>
+            <select id="rounding">
+              <option value="0.1">Nearest 0.1%</option>
+              <option value="0.5" selected>Nearest 0.5%</option>
+              <option value="1">Nearest 1%</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Data management -->
+      <div class="card">
+        <div class="field-label-caps">Data management</div>
+        <div class="row" style="margin-top:0.45rem;">
+          <button id="syncBtn2" class="secondary" style="font-size:0.8rem;">
+            <span class="material-symbols-outlined">cloud_download</span>
+            Sync feed
+          </button>
+          <button id="exportBtn" class="secondary" style="font-size:0.8rem;">
+            <span class="material-symbols-outlined">download</span>
+            Export
+          </button>
+        </div>
+        <p class="small">Sync uploads only encrypted percentage events. Prices and share counts stay on this device.</p>
+      </div>
+
+      <!-- Shareable node link -->
+      <div class="card">
+        <div class="field-label-caps">Shareable node link</div>
+        <p class="small" style="margin-bottom:0.45rem;">Friends enter this URL + the passphrase to view your group's % allocations.</p>
+        <div style="display:flex;gap:0.4rem;align-items:stretch;">
+          <div id="nodeLinkDisplay" class="node-link-display" style="flex:1;"></div>
+          <button id="copyNodeLinkBtn" class="icon-btn" aria-label="copy node link" style="flex-shrink:0;border:1px solid var(--border);border-radius:0.5rem;padding:0 0.6rem;">
+            <span class="material-symbols-outlined">content_copy</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Danger zone -->
+      <div class="card danger-zone">
+        <div class="field-label-caps" style="color:var(--error);">Danger zone</div>
+        <div class="row" style="margin-top:0.45rem;">
+          <button id="clearBtn" class="ghost danger" style="font-size:0.76rem;">
+            <span class="material-symbols-outlined">delete_forever</span>
+            Clear feed
+          </button>
+          <button id="resetPortfolioBtn2" class="ghost danger" style="font-size:0.76rem;">
+            <span class="material-symbols-outlined">delete_forever</span>
+            Reset portfolio
+          </button>
+        </div>
+      </div>
+
+      <!-- Cipher info -->
+      <div class="card">
+        <div class="field-label-caps">System architecture</div>
+        <div class="about-table" style="margin-top:0.4rem;">
+          <div class="about-row"><span>Cipher</span><span>AES-256-GCM</span></div>
+          <div class="about-row"><span>Key derivation</span><span>PBKDF2-SHA256 &middot; 250k iter</span></div>
+          <div class="about-row"><span>Passphrase scope</span><span>Device only</span></div>
+          <div class="about-row"><span>Server sees</span><span>Encrypted blobs only</span></div>
+        </div>
+      </div>
+
+      <!-- Mobile only: lock button -->
+      <div class="mobile-only" style="margin-top:0.5rem;padding-bottom:1rem;">
+        <button id="lockNodeBtn" class="ghost" style="width:100%;font-size:0.82rem;">
+          <span class="material-symbols-outlined">lock</span>
+          Lock &amp; return to entry screen
+        </button>
+      </div>
+
+    </div><!-- settings-panel-inner -->
+  </div>
+
+  <!-- Settings backdrop (desktop overlay) -->
+  <div id="settingsBackdrop" class="settings-backdrop"></div>
+
+  <!-- Mobile bottom nav -->
+  <nav class="bottom-nav">
+    <button class="nav-btn" id="navActivity" data-tab="activity">
+      <span class="material-symbols-outlined">dynamic_feed</span>
+      <span class="nav-label">Activity</span>
+    </button>
+    <button class="nav-btn active" id="navSignal" data-tab="signal">
+      <span class="material-symbols-outlined">add_box</span>
+      <span class="nav-label">Signal</span>
+    </button>
+    <button class="nav-btn" id="navSettings" data-tab="settings">
+      <span class="material-symbols-outlined">tune</span>
+      <span class="nav-label">Settings</span>
+    </button>
+  </nav>
+
+</div><!-- #app -->
+
+<!-- Feed item template -->
+<template id="feedItemTemplate">
+  <article class="feed-item">
+    <div class="avatar"></div>
+    <div class="feed-body">
+      <div class="feed-item-header">
+        <div class="feed-ticker-badge"></div>
+        <div class="decrypted-badge">
+          <span class="material-symbols-outlined">lock_open_right</span>
+          Decrypted
+        </div>
+      </div>
+      <div class="feed-line"></div>
+      <div class="feed-note"></div>
+      <div class="feed-meta"></div>
+    </div>
+  </article>
+</template>
+
+<script src="./app.js" type="module"></script>
+</body>
+</html>
