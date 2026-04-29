@@ -203,6 +203,17 @@
     }
     .btn-secondary:not(:disabled):hover { border-color: var(--text-dim); }
     .btn-small { padding: 7px 12px; font-size: 12px; }
+    .mode-select {
+      background: var(--bg3);
+      color: var(--text);
+      border: 1px solid var(--border-active);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      min-width: 132px;
+    }
 
     .status-strip {
       display: flex;
@@ -442,6 +453,10 @@
   <!-- Actions -->
   <div class="actions-bar">
     <span class="actions-label">AI-generated report from SEC filings</span>
+    <select class="mode-select" id="reportModeSelect" aria-label="Report mode">
+      <option value="baseline">Baseline</option>
+      <option value="debate">Debate</option>
+    </select>
     <button class="btn btn-secondary" id="copyPromptBtn" title="Copy the LLM prompt to clipboard">Copy Prompt</button>
     <button class="btn btn-primary" id="generateBtn">Generate Report</button>
   </div>

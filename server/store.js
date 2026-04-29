@@ -45,7 +45,8 @@ class ExposureStore {
         title TEXT,
         content_html TEXT NOT NULL,
         source TEXT,
-        generated_at TEXT NOT NULL
+        generated_at TEXT NOT NULL,
+        metadata_json TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_company_reports_ticker_generated
@@ -89,6 +90,8 @@ class ExposureStore {
       CREATE INDEX IF NOT EXISTS idx_settings_audit_group_changed_at
         ON settings_audit(group_id, changed_at DESC);
     `);
+
+    ensureColumn(this.db, "company_reports", "metadata_json", "TEXT");
   }
 
   ensureCircle(groupId) {
@@ -376,14 +379,32 @@ class ExposureStore {
     }));
   }
 
-  addCompanyReport(ticker, { id, title, contentHtml, source, reportType = 'sec_analysis', generatedAt }) {
+  addCompanyReport(ticker, { id, title, contentHtml, source, reportType = 'sec_analysis', generatedAt, metadata = null }) {
     const reportId = id || crypto.randomUUID();
     const now = generatedAt || new Date().toISOString();
     this.db.prepare(`
-      INSERT INTO company_reports (id, ticker, report_type, title, content_html, source, generated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(reportId, ticker.toUpperCase(), reportType, title ?? null, contentHtml, source ?? null, now);
+      INSERT INTO company_reports (id, ticker, report_type, title, content_html, source, generated_at, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      reportId,
+      ticker.toUpperCase(),
+      reportType,
+      title ?? null,
+      contentHtml,
+      source ?? null,
+      now,
+      metadata ? JSON.stringify(metadata) : null
+    );
     return reportId;
+  }
+
+  getCompanyReportMetadata(ticker, reportId) {
+    const row = this.db.prepare(`
+      SELECT metadata_json
+      FROM company_reports
+      WHERE ticker = ? AND id = ?
+    `).get(ticker.toUpperCase(), reportId);
+    return row?.metadata_json ? JSON.parse(row.metadata_json) : null;
   }
 
   async migrateLegacyGroupFiles() {
@@ -494,6 +515,12 @@ function parseSettings(settingsJson) {
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
+}
+
+function ensureColumn(db, tableName, columnName, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  if (columns.some((column) => column.name === columnName)) return;
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
 }
 
 function normalizeLmStudioUrl(value) {

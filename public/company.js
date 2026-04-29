@@ -87,11 +87,18 @@ function syncActionButtons({ hasFinancials = false, isLoading = false } = {}) {
   const copyPromptButton = getElement("copyPromptBtn");
   const generateButton = getElement("generateBtn");
   const retryButton = getElement("retrySecBtn");
+  const modeSelect = getElement("reportModeSelect");
 
   copyPromptButton.disabled = !hasFinancials;
   generateButton.disabled = isLoading || !hasFinancials;
   generateButton.title = hasFinancials ? "" : "Waiting for SEC financial data";
   if (retryButton) retryButton.disabled = isLoading;
+  if (modeSelect) modeSelect.disabled = isLoading || !hasFinancials;
+}
+
+function getSelectedReportMode() {
+  const select = getElement("reportModeSelect");
+  return select?.value === "debate" ? "debate" : "baseline";
 }
 
 async function ensureCompanyRegistered(force = false) {
@@ -423,7 +430,7 @@ async function generateReport() {
     const res = await fetch(`/api/companies/${encodeURIComponent(ticker)}/reports/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ groupId: getActiveGroupId() }),
+      body: JSON.stringify({ groupId: getActiveGroupId(), mode: getSelectedReportMode() }),
     });
     const data = await res.json();
 

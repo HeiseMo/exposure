@@ -6,6 +6,54 @@ const FETCH_TIMEOUT_MS = 30_000;
 let tickerCache = null;
 let tickerCacheExpiry = 0;
 
+const USD_SERIES = {
+  revenue: [
+    "Revenues",
+    "RevenueFromContractWithCustomerExcludingAssessedTax",
+    "SalesRevenueNet",
+    "RevenueFromContractWithCustomerIncludingAssessedTax",
+  ],
+  grossProfit: ["GrossProfit"],
+  operatingIncome: ["OperatingIncomeLoss"],
+  netIncome: ["NetIncomeLoss"],
+  operatingCashFlow: ["NetCashProvidedByUsedInOperatingActivities"],
+  capex: ["PaymentsToAcquirePropertyPlantAndEquipment", "CapitalExpendituresIncurredButNotYetPaid"],
+  rdExpense: ["ResearchAndDevelopmentExpense", "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost"],
+  cash: ["CashAndCashEquivalentsAtCarryingValue", "Cash", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"],
+  assets: ["Assets"],
+  liabilities: ["Liabilities"],
+  inventory: ["InventoryNet", "InventoriesNetOfReserves"],
+  accountsReceivable: ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"],
+  currentAssets: ["AssetsCurrent"],
+  currentLiabilities: ["LiabilitiesCurrent"],
+  debtTotal: [
+    "LongTermDebtAndCapitalLeaseObligations",
+    "LongTermDebtAndFinanceLeaseObligations",
+    "DebtAndFinanceLeaseObligations",
+    "DebtInstrumentFaceAmount",
+  ],
+  debtCurrent: [
+    "LongTermDebtAndCapitalLeaseObligationsCurrent",
+    "LongTermDebtAndFinanceLeaseObligationsCurrent",
+    "LongTermDebtCurrent",
+    "ShortTermBorrowings",
+    "ShortTermDebt",
+    "CommercialPaper",
+  ],
+  debtNoncurrent: [
+    "LongTermDebtAndCapitalLeaseObligationsNoncurrent",
+    "LongTermDebtAndFinanceLeaseObligationsNoncurrent",
+    "LongTermDebtNoncurrent",
+  ],
+};
+
+const SHARE_SERIES = {
+  sharesOutstanding: [
+    "CommonStockSharesOutstanding",
+    "EntityCommonStockSharesOutstanding",
+  ],
+};
+
 async function secFetch(url) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -33,9 +81,7 @@ async function getTickerMap() {
 async function lookupCIK(ticker) {
   const map = await getTickerMap();
   if (!map) return null;
-  const entry = Object.values(map).find(
-    (c) => c.ticker.toUpperCase() === ticker.toUpperCase()
-  );
+  const entry = Object.values(map).find((candidate) => candidate.ticker.toUpperCase() === ticker.toUpperCase());
   return entry ? String(entry.cik_str).padStart(10, "0") : null;
 }
 
@@ -74,76 +120,296 @@ async function lookupCIKByDisplayName(displayName) {
   return bestCIK;
 }
 
-function extractSeries(facts, ...concepts) {
+function extractUnitSeries(facts, concepts, units) {
   for (const concept of concepts) {
-    const data = facts?.["us-gaap"]?.[concept]?.units?.USD;
-    if (data?.length) return data;
+    const metric = facts?.["us-gaap"]?.[concept];
+    if (!metric?.units) continue;
+    for (const unit of units) {
+      const series = metric.units?.[unit];
+      if (Array.isArray(series) && series.length) {
+        return sanitizeSeries(series);
+      }
+    }
   }
   return [];
 }
 
-function annualValues(series) {
-  const byYear = new Map();
-  for (const e of series) {
-    if (e.form !== "10-K" || !e.end || !e.start) continue;
-    const year = e.end.slice(0, 4);
-    if (!byYear.has(year) || new Date(e.end) > new Date(byYear.get(year).end)) {
-      byYear.set(year, { year, value: e.val, end: e.end });
-    }
-  }
-  return [...byYear.values()].sort((a, b) => a.year.localeCompare(b.year)).slice(-6);
+function sanitizeSeries(series) {
+  return series
+    .map((entry) => ({
+      val: toNumber(entry?.val),
+      start: entry?.start || null,
+      end: entry?.end || null,
+      fy: entry?.fy || null,
+      fp: entry?.fp || null,
+      form: entry?.form || null,
+      filed: entry?.filed || null,
+      frame: entry?.frame || null,
+    }))
+    .filter((entry) => entry.val != null && entry.end);
 }
 
-function quarterlyValues(series) {
-  const byPeriod = new Map();
-  for (const e of series) {
-    if (!["10-Q", "10-K"].includes(e.form) || !e.end) continue;
-    if (!byPeriod.has(e.end) || new Date(e.end) > new Date(byPeriod.get(e.end).end)) {
-      byPeriod.set(e.end, { period: e.end, value: e.val, form: e.form });
+function toNumber(value) {
+  return Number.isFinite(value) ? value : Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function durationDays(entry) {
+  if (!entry?.start || !entry?.end) return null;
+  const start = new Date(entry.start);
+  const end = new Date(entry.end);
+  if (Number.isNaN(start.valueOf()) || Number.isNaN(end.valueOf())) return null;
+  return Math.round((end - start) / 86_400_000) + 1;
+}
+
+function fiscalYear(entry) {
+  return String(entry?.fy || entry?.end?.slice(0, 4) || "");
+}
+
+function quarterNumber(entry) {
+  const fp = String(entry?.fp || "").toUpperCase();
+  if (fp === "Q1") return 1;
+  if (fp === "Q2") return 2;
+  if (fp === "Q3") return 3;
+  if (fp === "Q4") return 4;
+  return null;
+}
+
+function pickPreferredEntry(entries) {
+  return [...entries].sort((a, b) => {
+    const filedA = new Date(a.filed || a.end).valueOf();
+    const filedB = new Date(b.filed || b.end).valueOf();
+    return filedB - filedA;
+  })[0] || null;
+}
+
+function buildAnnualDurationRecords(series) {
+  const byYear = new Map();
+  for (const entry of series) {
+    const year = fiscalYear(entry);
+    const fp = String(entry.fp || "").toUpperCase();
+    const days = durationDays(entry);
+    const isAnnual = entry.form === "10-K" || fp === "FY" || (days != null && days >= 300);
+    if (!year || !isAnnual) continue;
+    const group = byYear.get(year) || [];
+    group.push(entry);
+    byYear.set(year, group);
+  }
+  return [...byYear.entries()]
+    .map(([year, entries]) => {
+      const best = pickPreferredEntry(entries);
+      return best ? { year, end: best.end, value: best.val } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.year.localeCompare(b.year))
+    .slice(-6);
+}
+
+function buildAnnualInstantRecords(series) {
+  const byYear = new Map();
+  for (const entry of series) {
+    const year = fiscalYear(entry);
+    if (!year) continue;
+    const group = byYear.get(year) || [];
+    group.push(entry);
+    byYear.set(year, group);
+  }
+  return [...byYear.entries()]
+    .map(([year, entries]) => {
+      const best = pickPreferredEntry(entries);
+      return best ? { year, end: best.end, value: best.val } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.year.localeCompare(b.year))
+    .slice(-6);
+}
+
+function buildQuarterlyDurationRecords(series) {
+  const byFy = new Map();
+
+  for (const entry of series) {
+    const fy = fiscalYear(entry);
+    if (!fy || !["10-Q", "10-K"].includes(String(entry.form || "").toUpperCase())) continue;
+    const fp = String(entry.fp || "").toUpperCase();
+    if (!["Q1", "Q2", "Q3", "Q4", "FY"].includes(fp)) continue;
+    const key = `${fy}:${fp}`;
+    const current = byFy.get(key);
+    if (!current || new Date(entry.filed || entry.end) > new Date(current.filed || current.end)) {
+      byFy.set(key, entry);
     }
   }
-  return [...byPeriod.values()].sort((a, b) => a.period.localeCompare(b.period)).slice(-8);
+
+  const grouped = new Map();
+  for (const entry of byFy.values()) {
+    const fy = fiscalYear(entry);
+    const bucket = grouped.get(fy) || {};
+    bucket[String(entry.fp || "").toUpperCase()] = entry;
+    grouped.set(fy, bucket);
+  }
+
+  const results = [];
+  for (const [fy, entries] of [...grouped.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0])))) {
+    const q1 = deriveQuarterValue(entries.Q1, null);
+    const q2 = deriveQuarterValue(entries.Q2, entries.Q1);
+    const q3 = deriveQuarterValue(entries.Q3, entries.Q2);
+    const q4 = deriveFourthQuarter(entries.FY, q1, q2, q3) ?? deriveQuarterValue(entries.Q4, null);
+
+    pushQuarterResult(results, fy, 1, entries.Q1, q1);
+    pushQuarterResult(results, fy, 2, entries.Q2, q2);
+    pushQuarterResult(results, fy, 3, entries.Q3, q3);
+    pushQuarterResult(results, fy, 4, entries.FY || entries.Q4, q4);
+  }
+
+  if (results.length) return results.slice(-8);
+
+  return series
+    .filter((entry) => {
+      const days = durationDays(entry);
+      return days != null && days >= 70 && days <= 110;
+    })
+    .sort((a, b) => String(a.end).localeCompare(String(b.end)))
+    .slice(-8)
+    .map((entry) => ({
+      fy: fiscalYear(entry),
+      quarter: quarterNumber(entry),
+      end: entry.end,
+      label: buildQuarterLabel(fiscalYear(entry), quarterNumber(entry), entry.end),
+      revenue: entry.val,
+    }));
+}
+
+function deriveQuarterValue(entry, previousEntry) {
+  if (!entry) return null;
+  const days = durationDays(entry);
+  if (days != null && days <= 110) return entry.val;
+  if (previousEntry?.val != null) return entry.val - previousEntry.val;
+  return null;
+}
+
+function deriveFourthQuarter(annualEntry, q1, q2, q3) {
+  if (!annualEntry || q1 == null || q2 == null || q3 == null) return null;
+  return annualEntry.val - q1 - q2 - q3;
+}
+
+function pushQuarterResult(results, fy, quarter, entry, value) {
+  if (!entry || value == null) return;
+  results.push({
+    fy,
+    quarter,
+    end: entry.end,
+    label: buildQuarterLabel(fy, quarter, entry.end),
+    revenue: value,
+  });
+}
+
+function buildQuarterLabel(fy, quarter, end) {
+  if (quarter && fy) return `Q${quarter} FY${String(fy).slice(-2)}`;
+  return end || "Quarter";
 }
 
 function latestValue(series) {
   if (!series.length) return null;
-  return series
-    .filter((e) => e.end)
-    .sort((a, b) => new Date(b.end) - new Date(a.end))[0]?.val ?? null;
+  return [...series]
+    .sort((a, b) => new Date(b.end).valueOf() - new Date(a.end).valueOf())[0]?.val ?? null;
+}
+
+function annualMap(records) {
+  const map = new Map();
+  for (const row of records) {
+    map.set(row.year, { year: row.year, end: row.end });
+  }
+  return map;
+}
+
+function assignAnnualMetric(map, records, key) {
+  for (const row of records) {
+    const target = map.get(row.year) || { year: row.year, end: row.end };
+    target[key] = row.value;
+    if (!target.end && row.end) target.end = row.end;
+    map.set(row.year, target);
+  }
+}
+
+function combineLatestValues(a, b) {
+  if (a == null && b == null) return null;
+  return (a || 0) + (b || 0);
+}
+
+function combineAnnualSeries(seriesA, seriesB) {
+  const map = annualMap([...seriesA, ...seriesB]);
+  assignAnnualMetric(map, seriesA, "a");
+  assignAnnualMetric(map, seriesB, "b");
+  return [...map.values()]
+    .map((row) => ({
+      year: row.year,
+      end: row.end,
+      value: combineLatestValues(row.a, row.b),
+    }))
+    .sort((a, b) => a.year.localeCompare(b.year))
+    .slice(-6);
 }
 
 function extractFinancials(facts) {
-  const revenue = extractSeries(
-    facts,
-    "Revenues",
-    "RevenueFromContractWithCustomerExcludingAssessedTax",
-    "SalesRevenueNet",
-    "RevenueFromContractWithCustomerIncludingAssessedTax"
-  );
-  const grossProfit = extractSeries(facts, "GrossProfit");
-  const operatingIncome = extractSeries(facts, "OperatingIncomeLoss");
-  const netIncome = extractSeries(facts, "NetIncomeLoss");
-  const cash = extractSeries(facts, "CashAndCashEquivalentsAtCarryingValue", "Cash");
-  const assets = extractSeries(facts, "Assets");
-  const liabilities = extractSeries(facts, "Liabilities");
-  const capex = extractSeries(facts, "PaymentsToAcquirePropertyPlantAndEquipment");
-  const operatingCashFlow = extractSeries(facts, "NetCashProvidedByUsedInOperatingActivities");
-  const eps = facts?.["us-gaap"]?.["EarningsPerShareDiluted"]?.units?.["USD/shares"] ?? [];
+  const annual = new Map();
+
+  const revenueAnnual = buildAnnualDurationRecords(extractUnitSeries(facts, USD_SERIES.revenue, ["USD"]));
+  const grossProfitAnnual = buildAnnualDurationRecords(extractUnitSeries(facts, USD_SERIES.grossProfit, ["USD"]));
+  const operatingIncomeAnnual = buildAnnualDurationRecords(extractUnitSeries(facts, USD_SERIES.operatingIncome, ["USD"]));
+  const netIncomeAnnual = buildAnnualDurationRecords(extractUnitSeries(facts, USD_SERIES.netIncome, ["USD"]));
+  const operatingCashFlowAnnual = buildAnnualDurationRecords(extractUnitSeries(facts, USD_SERIES.operatingCashFlow, ["USD"]));
+  const capexAnnual = buildAnnualDurationRecords(extractUnitSeries(facts, USD_SERIES.capex, ["USD"]));
+  const rdExpenseAnnual = buildAnnualDurationRecords(extractUnitSeries(facts, USD_SERIES.rdExpense, ["USD"]));
+
+  const cashSeries = extractUnitSeries(facts, USD_SERIES.cash, ["USD"]);
+  const assetsSeries = extractUnitSeries(facts, USD_SERIES.assets, ["USD"]);
+  const liabilitiesSeries = extractUnitSeries(facts, USD_SERIES.liabilities, ["USD"]);
+  const inventorySeries = extractUnitSeries(facts, USD_SERIES.inventory, ["USD"]);
+  const receivablesSeries = extractUnitSeries(facts, USD_SERIES.accountsReceivable, ["USD"]);
+  const currentAssetsSeries = extractUnitSeries(facts, USD_SERIES.currentAssets, ["USD"]);
+  const currentLiabilitiesSeries = extractUnitSeries(facts, USD_SERIES.currentLiabilities, ["USD"]);
+  const sharesSeries = extractUnitSeries(facts, SHARE_SERIES.sharesOutstanding, ["shares"]);
+  const epsSeries = extractUnitSeries(facts, ["EarningsPerShareDiluted"], ["USD/shares"]);
+
+  const debtTotalSeries = extractUnitSeries(facts, USD_SERIES.debtTotal, ["USD"]);
+  const debtCurrentSeries = extractUnitSeries(facts, USD_SERIES.debtCurrent, ["USD"]);
+  const debtNoncurrentSeries = extractUnitSeries(facts, USD_SERIES.debtNoncurrent, ["USD"]);
+
+  const annualDebt = debtTotalSeries.length
+    ? buildAnnualInstantRecords(debtTotalSeries)
+    : combineAnnualSeries(buildAnnualInstantRecords(debtCurrentSeries), buildAnnualInstantRecords(debtNoncurrentSeries));
+
+  const latestDebt = debtTotalSeries.length
+    ? latestValue(debtTotalSeries)
+    : combineLatestValues(latestValue(debtCurrentSeries), latestValue(debtNoncurrentSeries));
+
+  assignAnnualMetric(annual, revenueAnnual, "revenue");
+  assignAnnualMetric(annual, grossProfitAnnual, "grossProfit");
+  assignAnnualMetric(annual, operatingIncomeAnnual, "operatingIncome");
+  assignAnnualMetric(annual, netIncomeAnnual, "netIncome");
+  assignAnnualMetric(annual, operatingCashFlowAnnual, "operatingCashFlow");
+  assignAnnualMetric(annual, capexAnnual, "capex");
+  assignAnnualMetric(annual, rdExpenseAnnual, "rdExpense");
+  assignAnnualMetric(annual, buildAnnualInstantRecords(cashSeries), "cash");
+  assignAnnualMetric(annual, buildAnnualInstantRecords(assetsSeries), "assets");
+  assignAnnualMetric(annual, buildAnnualInstantRecords(liabilitiesSeries), "liabilities");
+  assignAnnualMetric(annual, annualDebt, "debt");
+  assignAnnualMetric(annual, buildAnnualInstantRecords(sharesSeries), "sharesOutstanding");
 
   return {
-    annualRevenue: annualValues(revenue),
-    annualGrossProfit: annualValues(grossProfit),
-    annualOperatingIncome: annualValues(operatingIncome),
-    annualNetIncome: annualValues(netIncome),
-    annualOperatingCashFlow: annualValues(operatingCashFlow),
-    annualCapex: annualValues(capex),
-    quarterlyRevenue: quarterlyValues(revenue),
-    latestCash: latestValue(cash),
-    latestAssets: latestValue(assets),
-    latestLiabilities: latestValue(liabilities),
-    latestEpsDiluted: eps.length
-      ? eps.filter((e) => e.end).sort((a, b) => new Date(b.end) - new Date(a.end))[0]?.val ?? null
-      : null,
+    version: 2,
+    annual: [...annual.values()].sort((a, b) => a.year.localeCompare(b.year)).slice(-6),
+    quarterly: buildQuarterlyDurationRecords(extractUnitSeries(facts, USD_SERIES.revenue, ["USD"])),
+    latest: {
+      cash: latestValue(cashSeries),
+      assets: latestValue(assetsSeries),
+      liabilities: latestValue(liabilitiesSeries),
+      debt: latestDebt,
+      sharesOutstanding: latestValue(sharesSeries),
+      inventory: latestValue(inventorySeries),
+      accountsReceivable: latestValue(receivablesSeries),
+      currentAssets: latestValue(currentAssetsSeries),
+      currentLiabilities: latestValue(currentLiabilitiesSeries),
+      epsDiluted: latestValue(epsSeries),
+    },
   };
 }
 
