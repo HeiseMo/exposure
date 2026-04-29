@@ -9,6 +9,10 @@ const AVATAR_COLORS = [
   { bg: "rgba(250,204,21,0.14)",  text: "#facc15" },
 ];
 
+const DEFAULT_POSITION_SORT = { key: "allocation", direction: "desc" };
+
+let selectedMemberName = "";
+
 const els = {
   installBtn: $("installBtn"),
   displayName: $("displayName"),
@@ -19,6 +23,10 @@ const els = {
   markPrice: $("markPrice"),
   note: $("note"),
   applyTradeBtn: $("applyTradeBtn"),
+  tradeFormCard: $("tradeFormCard"),
+  tradeFormBody: $("tradeFormBody"),
+  tradeFormToggleBtn: $("tradeFormToggleBtn"),
+  tradeFormHint: $("tradeFormHint"),
   importPortfolio: $("importPortfolio"),
   replaceImportBtn: $("replaceImportBtn"),
   mergeImportBtn: $("mergeImportBtn"),
@@ -29,6 +37,7 @@ const els = {
   syncBtn2: $("syncBtn2"),
   exportBtn: $("exportBtn"),
   clearBtn: $("clearBtn"),
+  nodeIdentityHint: $("nodeIdentityHint"),
   resetPortfolioBtn: $("resetPortfolioBtn"),
   resetPortfolioBtn2: $("resetPortfolioBtn2"),
   portfolioSummary: $("portfolioSummary"),
@@ -36,6 +45,9 @@ const els = {
   positions: $("positions"),
   nodeLinkDisplay: $("nodeLinkDisplay"),
   feed: $("feed"),
+  memberSnapshots: $("memberSnapshots"),
+  memberProfilePanel: $("memberProfilePanel"),
+  lastSyncedLabel: $("lastSyncedLabel"),
   template: $("feedItemTemplate"),
   navActivity: $("navActivity"),
   navSignal: $("navSignal"),
@@ -66,6 +78,8 @@ const els = {
   settingsBackdrop: $("settingsBackdrop"),
   lockIconBtn: $("lockIconBtn"),
   lockNodeBtn: $("lockNodeBtn"),
+  environmentBanner: $("environmentBanner"),
+  environmentBannerText: $("environmentBannerText"),
   // Profile / avatar
   avatarPreviewLarge: $("avatarPreviewLarge"),
   colorSwatches: $("colorSwatches"),
@@ -97,12 +111,30 @@ const storage = {
   set remoteIds(value) {
     localStorage.setItem("exposure.remoteIds", JSON.stringify([...value]));
   },
+  get positionSort() {
+    const value = readJson("exposure.positionSort", DEFAULT_POSITION_SORT);
+    if (!value?.key || !value?.direction) return DEFAULT_POSITION_SORT;
+    return value;
+  },
+  set positionSort(value) {
+    localStorage.setItem("exposure.positionSort", JSON.stringify(value));
+  },
+  get lastSyncedAt() {
+    return localStorage.getItem("exposure.lastSyncedAt") || "";
+  },
+  set lastSyncedAt(value) {
+    if (value) localStorage.setItem("exposure.lastSyncedAt", value);
+    else localStorage.removeItem("exposure.lastSyncedAt");
+  },
 };
 
 function boot() {
+  syncEnvironmentState();
+
   // Pre-fill settings from localStorage
   els.displayName.value = localStorage.getItem("exposure.displayName") || "";
   els.groupId.value = localStorage.getItem("exposure.groupId") || "friends";
+  els.passphrase.value = sessionStorage.getItem("exposure.passphrase") || "";
   els.rounding.value = localStorage.getItem("exposure.rounding") || "0.5";
 
   // Pre-fill entry screen with saved group ID
@@ -112,6 +144,9 @@ function boot() {
   renderPortfolio();
   renderFeed();
   updateNodeLink();
+  updateLastSyncedLabel();
+  syncNodeIdentityState();
+  syncTradeFormState();
 
   initAvatarPicker();
 
@@ -160,15 +195,17 @@ function boot() {
 
   // Trade + portfolio actions
   els.applyTradeBtn.addEventListener("click", applyTrade);
+  els.tradeFormToggleBtn.addEventListener("click", toggleTradeForm);
   els.replaceImportBtn.addEventListener("click", () => importPortfolio("replace"));
   els.mergeImportBtn.addEventListener("click", () => importPortfolio("merge"));
   els.clearBtn.addEventListener("click", clearFeed);
   els.exportBtn.addEventListener("click", exportFeed);
   els.syncBtn.addEventListener("click", syncFeed);
   els.syncBtn2.addEventListener("click", syncFeed);
-  els.resetPortfolioBtn.addEventListener("click", resetPortfolio);
-  els.resetPortfolioBtn2.addEventListener("click", resetPortfolio);
+  if (els.resetPortfolioBtn) els.resetPortfolioBtn.addEventListener("click", resetPortfolio);
+  if (els.resetPortfolioBtn2) els.resetPortfolioBtn2.addEventListener("click", resetPortfolio);
   els.positions.addEventListener("click", handlePositionsClick);
+  els.memberSnapshots.addEventListener("click", handleMemberSnapshotsClick);
 
   // Passphrase visibility toggle
   els.togglePassphraseBtn.addEventListener("click", () => {
@@ -223,6 +260,55 @@ function isDesktop() {
   return window.matchMedia("(min-width: 768px)").matches;
 }
 
+function isFileMode() {
+  return location.protocol === "file:";
+}
+
+function getEnvironmentRestriction() {
+  if (isFileMode()) {
+    return {
+      bodyClass: "file-mode",
+      message: "Local file mode detected. Open Exposure from its http(s) server URL to sync with other devices.",
+      actionTitle: "Unavailable in local file mode",
+    };
+  }
+
+  if (!window.isSecureContext || !window.crypto?.subtle) {
+    return {
+      bodyClass: "insecure-mode",
+      message: "This browser session is not a secure context. Sync requires HTTPS, or localhost during development.",
+      actionTitle: "Unavailable without HTTPS or localhost",
+    };
+  }
+
+  return null;
+}
+
+function syncEnvironmentState() {
+  const restriction = getEnvironmentRestriction();
+  document.body.classList.toggle("file-mode", restriction?.bodyClass === "file-mode");
+  document.body.classList.toggle("insecure-mode", restriction?.bodyClass === "insecure-mode");
+
+  if (els.environmentBanner) {
+    els.environmentBanner.classList.toggle("hidden", !restriction);
+  }
+  if (els.environmentBannerText && restriction) {
+    els.environmentBannerText.textContent = restriction.message;
+  }
+
+  [els.syncBtn, els.syncBtn2, els.exportBtn].filter(Boolean).forEach((button) => {
+    const disabled = Boolean(restriction);
+    button.disabled = disabled;
+    button.setAttribute("aria-disabled", String(disabled));
+    button.title = restriction?.actionTitle || "";
+  });
+}
+
+function getSyncBlockMessage() {
+  const restriction = getEnvironmentRestriction();
+  return restriction?.message || "";
+}
+
 function switchTab(name) {
   const desktop = isDesktop();
   if (desktop) {
@@ -249,16 +335,26 @@ function switchTab(name) {
 
 function enterNode() {
   const groupId = normalizeGroup(els.entryGroupId.value);
+  const passphrase = els.entryPassphrase.value;
   if (!groupId) return toast("Enter a group identifier.");
+  if (passphrase.length < 8) return toast("Use a group passphrase of at least 8 characters.");
 
   // Sync entry values to settings inputs
   els.groupId.value = groupId;
-  els.passphrase.value = els.entryPassphrase.value;
+  els.passphrase.value = passphrase;
   localStorage.setItem("exposure.groupId", groupId);
+  sessionStorage.setItem("exposure.passphrase", passphrase);
   updateNodeLink();
 
   sessionStorage.setItem("exposure.unlocked", "1");
+  syncNodeIdentityState();
   showDashboard();
+
+  if (location.protocol !== "file:") {
+    syncFeed().catch((error) => {
+      console.warn("Auto-sync on join failed", error);
+    });
+  }
 }
 
 function showLanding() {
@@ -275,19 +371,40 @@ function showDashboard() {
   els.landingView.classList.add("hidden");
   els.entryView.classList.add("hidden");
   els.dashboard.classList.remove("hidden");
+  syncNodeIdentityState();
+  syncTradeFormState();
   switchTab(isDesktop() ? "signal" : (sessionStorage.getItem("exposure.activeTab") || "signal"));
 }
 
 function lockNode() {
+  els.groupId.readOnly = false;
+  els.passphrase.readOnly = false;
   els.passphrase.value = "";
   els.entryPassphrase.value = "";
+  sessionStorage.removeItem("exposure.passphrase");
   sessionStorage.removeItem("exposure.unlocked");
   sessionStorage.removeItem("exposure.activeTab");
+  syncNodeIdentityState();
   // Close settings if open
   els.tabSettings.classList.remove("panel-open");
   els.settingsBackdrop.classList.remove("visible");
   els.dashboard.classList.add("hidden");
   showLanding();
+}
+
+function syncNodeIdentityState() {
+  const isUnlocked = sessionStorage.getItem("exposure.unlocked") === "1";
+
+  els.groupId.readOnly = isUnlocked;
+  els.passphrase.readOnly = isUnlocked;
+  els.groupId.classList.toggle("locked-input", isUnlocked);
+  els.passphrase.classList.toggle("locked-input", isUnlocked);
+
+  if (els.nodeIdentityHint) {
+    els.nodeIdentityHint.textContent = isUnlocked
+      ? "Circle identity is locked while joined. Use Lock Node to switch circles."
+      : "Join a circle to lock its identity on this device.";
+  }
 }
 
 // ── Avatar ──
@@ -468,11 +585,18 @@ function parseScalableCSV(text) {
 function confirmScalableImport(mode) {
   if (!_pendingScalablePositions?.length) return;
 
+  const wasEmpty = storage.positions.length === 0;
+  const author = getAuthorName();
+
   const next = mode === "replace"
     ? _pendingScalablePositions
     : mergeImportedPositions(storage.positions, _pendingScalablePositions);
 
   storage.positions = sortPositions(next);
+  if (wasEmpty && next.length) {
+    storage.signals = [createImportEvent({ author, positions: next, source: "scalable" }), ...storage.signals];
+    renderFeed();
+  }
   _pendingScalablePositions = null;
   els.scalableImportActions.classList.add("hidden");
   els.scalableImportStatus.className = "import-status success";
@@ -546,6 +670,7 @@ function applyTrade() {
   clearTradeForm();
   renderPortfolio();
   renderFeed();
+  setTradeFormCollapsed(true, { persist: true });
   toast("Local portfolio updated. Press Sync to share the percentage move.");
 }
 
@@ -553,11 +678,18 @@ function importPortfolio(mode) {
   const rows = parseImportedPositions(els.importPortfolio.value);
   if (!rows.length) return toast("Add at least one holding to import.");
 
+  const wasEmpty = storage.positions.length === 0;
+  const author = getAuthorName();
+
   const nextPositions = mode === "replace"
     ? rows
     : mergeImportedPositions(storage.positions, rows);
 
   storage.positions = sortPositions(nextPositions);
+  if (wasEmpty && nextPositions.length) {
+    storage.signals = [createImportEvent({ author, positions: nextPositions, source: "manual" }), ...storage.signals];
+    renderFeed();
+  }
   els.importPortfolio.value = "";
   renderPortfolio();
   toast(mode === "replace" ? "Local portfolio replaced." : "Import merged into local portfolio.");
@@ -658,6 +790,7 @@ function createSignal({ author, asset, tradeType, quantity, previousExposure, ne
 
   return {
     id: crypto.randomUUID(),
+    kind: "trade",
     author,
     asset,
     action: deriveSignalAction(tradeType, roundedPrevious, roundedNew),
@@ -680,51 +813,117 @@ function deriveSignalAction(tradeType, previousExposure, newExposure) {
   return "Updated";
 }
 
-function renderPortfolio() {
-  const positions = sortPositions(storage.positions);
+function getAuthorName() {
+  return els.displayName.value.trim() || "Anonymous";
+}
+
+function buildExposureSnapshot(positions) {
   const exposures = computeExposureMap(positions);
+  return [...exposures.entries()]
+    .filter(([, pct]) => pct > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([asset, exposure]) => ({ asset, exposure: roundExposure(exposure) }));
+}
+
+function createImportEvent({ author, positions, source }) {
+  const snapshot = buildExposureSnapshot(positions);
+  return {
+    id: crypto.randomUUID(),
+    kind: "import",
+    author,
+    action: "Imported portfolio",
+    createdAt: new Date().toISOString(),
+    snapshot,
+    meta: {
+      source,
+      holdingsCount: snapshot.length,
+    },
+  };
+}
+
+function createPresenceEvent({ author, positions }) {
+  return {
+    id: crypto.randomUUID(),
+    kind: "presence",
+    author,
+    action: "Synced node",
+    createdAt: new Date().toISOString(),
+    snapshot: buildExposureSnapshot(positions),
+  };
+}
+
+function snapshotsEqual(left = [], right = []) {
+  if (left.length !== right.length) return false;
+  return left.every((entry, index) => entry.asset === right[index]?.asset && entry.exposure === right[index]?.exposure);
+}
+
+function ensurePresenceEvent() {
+  const author = getAuthorName();
+  const snapshot = buildExposureSnapshot(storage.positions);
+  const latestPresence = storage.signals.find((signal) => signal.kind === "presence" && signal.author === author);
+
+  if (latestPresence && snapshotsEqual(latestPresence.snapshot, snapshot)) return;
+
+  storage.signals = [createPresenceEvent({ author, positions: storage.positions }), ...storage.signals];
+}
+
+function renderPortfolio() {
+  const sortState = storage.positionSort;
+  const exposures = computeExposureMap(storage.positions);
+  const positions = sortPositions(storage.positions, sortState, exposures);
   const totalValue = positions.reduce((sum, p) => sum + p.quantity * effectiveMarkPrice(p), 0);
   const totalCostBasis = positions.reduce((sum, p) => sum + p.quantity * p.avgPrice, 0);
   const totalPnL = totalValue - totalCostBasis;
+  const portfolioHero = document.getElementById("portfolioHero");
 
-  // Portfolio summary header
+  // ── Hero section ──
   if (positions.length && totalValue > 0) {
-    els.portfolioSummaryHeader.classList.remove("hidden");
+    portfolioHero.classList.remove("hidden");
     const pnlClass = totalPnL >= 0 ? "position-pnl-positive" : "position-pnl-negative";
     const pnlSign = totalPnL >= 0 ? "+" : "";
-    els.portfolioSummaryHeader.innerHTML = `
-      <div>
-        <div class="summary-stat-label">Market Value</div>
-        <div class="summary-stat-value">${formatAmount(totalValue)}</div>
+    const pnlPct = totalCostBasis > 0 ? ` (${pnlSign}${((totalPnL / totalCostBasis) * 100).toFixed(1)}%)` : "";
+
+    const segments = [...exposures.entries()]
+      .filter(([, pct]) => pct > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([asset, pct], i) => ({ label: asset, value: pct, color: ASSET_COLORS[i % ASSET_COLORS.length] }));
+
+    portfolioHero.innerHTML = `
+      <div class="hero-chart">${createDonutSvg(segments, 110)}</div>
+      <div class="hero-stats">
+        <div class="hero-value">${formatAmount(totalValue)}</div>
+        <div class="hero-pnl ${pnlClass}">${pnlSign}${formatAmount(totalPnL)}${pnlPct}</div>
+        <div class="hero-meta">${positions.length} position${positions.length === 1 ? "" : "s"} &middot; prices stay on device</div>
       </div>
-      <div>
-        <div class="summary-stat-label">Cost Basis</div>
-        <div class="summary-stat-value">${formatAmount(totalCostBasis)}</div>
-      </div>
-      <div>
-        <div class="summary-stat-label">Unrealized P&amp;L</div>
-        <div class="summary-stat-value ${pnlClass}">${pnlSign}${formatAmount(totalPnL)}</div>
-      </div>
+      <button class="hero-reset-btn" id="heroResetBtn" title="Reset portfolio">
+        <span class="material-symbols-outlined">delete_forever</span>
+      </button>
     `;
+    document.getElementById("heroResetBtn").addEventListener("click", resetPortfolio);
   } else {
-    els.portfolioSummaryHeader.classList.add("hidden");
+    portfolioHero.classList.add("hidden");
   }
 
+  // ── Position table ──
   if (!positions.length) {
-    els.portfolioSummary.textContent = "No local holdings yet. Add trades above — only percentages are shared.";
-    els.positions.innerHTML = `<div class="feed-empty">No local holdings yet.</div>`;
+    els.positions.innerHTML = `
+      <div class="portfolio-empty">
+        <span class="material-symbols-outlined">account_balance_wallet</span>
+        <strong>No positions yet</strong>
+        Import from Scalable Capital or record your first move below.
+      </div>`;
+    syncTradeFormState();
     return;
   }
 
-  if (totalValue <= 0) {
-    els.portfolioSummary.textContent = "Holdings stored locally. Set a mark or average price above zero to calculate exposure.";
-  } else {
-    els.portfolioSummary.textContent = `${positions.length} holding${positions.length === 1 ? "" : "s"} tracked locally. Prices stay on this device.`;
-  }
+  // Assign colours consistent with hero chart
+  const colorMap = new Map(
+    [...exposures.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([asset], i) => [asset, ASSET_COLORS[i % ASSET_COLORS.length]])
+  );
 
-  renderPortfolioChart();
-
-  els.positions.innerHTML = positions.map((position) => {
+  const rowsHtml = positions.map(position => {
     const exposure = exposures.get(position.asset) || 0;
     const markPx = effectiveMarkPrice(position);
     const marketValue = position.quantity * markPx;
@@ -732,52 +931,77 @@ function renderPortfolio() {
     const pnl = marketValue - costBasis;
     const pnlClass = pnl >= 0 ? "position-pnl-positive" : "position-pnl-negative";
     const pnlSign = pnl >= 0 ? "+" : "";
+    const color = colorMap.get(position.asset) || ASSET_COLORS[0];
+
+    // Shorten long names: use everything before first space if > 10 chars
+    const ticker = position.asset.length > 12
+      ? position.asset.split(" ")[0]
+      : position.asset;
+    const hasLongName = ticker !== position.asset;
 
     return `
-      <article class="position-card" data-asset="${escapeAttribute(position.asset)}">
-        <div class="position-head">
-          <div>
-            <div class="position-asset font-grotesk">${escapeHtml(position.asset)}</div>
-            <div class="position-exposure">${formatExposure(exposure)} of portfolio</div>
+      <div class="position-row" data-asset="${escapeAttribute(position.asset)}">
+        <div class="pos-dot" style="background:${color}"></div>
+        <div class="pos-ticker-wrap">
+          <div class="pos-ticker">${escapeHtml(ticker)}</div>
+          ${hasLongName ? `<div class="pos-name">${escapeHtml(position.asset)}</div>` : ""}
+        </div>
+        <div class="pos-bar-col">
+          <div class="pos-bar-track"><div class="pos-bar" style="width:${Math.min(100, exposure)}%;background:${color}"></div></div>
+          <span class="pos-pct">${formatExposure(exposure)}</span>
+        </div>
+        <div class="pos-pnl ${pnlClass}">${pnlSign}${formatAmount(pnl)}</div>
+        <div class="pos-chevron"><span class="material-symbols-outlined">expand_more</span></div>
+      </div>
+      <div class="position-detail" data-detail-for="${escapeAttribute(position.asset)}">
+        <div class="position-detail-inner">
+          <div class="detail-stats">
+            <div>
+              <div class="detail-stat-label">Market value</div>
+              <div class="detail-stat-value">${formatAmount(marketValue)}</div>
+            </div>
+            <div>
+              <div class="detail-stat-label">Cost basis</div>
+              <div class="detail-stat-value">${formatAmount(costBasis)}</div>
+            </div>
+            <div>
+              <div class="detail-stat-label">Unrealized P&amp;L</div>
+              <div class="detail-stat-value ${pnlClass}">${pnlSign}${formatAmount(pnl)}</div>
+            </div>
           </div>
-          <div class="position-value-block">
-            <div class="position-market-value">${formatAmount(marketValue)}</div>
-            <div class="position-pnl ${pnlClass}">${pnlSign}${formatAmount(pnl)}</div>
+          <div class="detail-inputs">
+            <div>
+              <label>Shares</label>
+              <input class="position-input" data-field="quantity" inputmode="decimal" value="${escapeAttribute(formatEditableNumber(position.quantity))}" />
+            </div>
+            <div>
+              <label>Avg buy-in</label>
+              <input class="position-input" data-field="avgPrice" inputmode="decimal" value="${escapeAttribute(formatEditableNumber(position.avgPrice))}" />
+            </div>
+            <div>
+              <label>Mark price</label>
+              <input class="position-input" data-field="markPrice" inputmode="decimal" value="${escapeAttribute(formatEditableNumber(position.markPrice))}" />
+            </div>
+          </div>
+          <div class="detail-actions">
+            <button class="secondary" data-action="save">Save</button>
+            <button class="ghost danger" data-action="delete">Delete</button>
           </div>
         </div>
-        <div class="position-grid">
-          <div>
-            <label>Shares</label>
-            <input class="position-input" data-field="quantity" inputmode="decimal" value="${escapeAttribute(formatEditableNumber(position.quantity))}" />
-          </div>
-          <div>
-            <label>Avg buy-in</label>
-            <input class="position-input" data-field="avgPrice" inputmode="decimal" value="${escapeAttribute(formatEditableNumber(position.avgPrice))}" />
-          </div>
-          <div>
-            <label>Mark price</label>
-            <input class="position-input" data-field="markPrice" inputmode="decimal" value="${escapeAttribute(formatEditableNumber(position.markPrice))}" />
-          </div>
-          <div>
-            <label>Market value</label>
-            <div class="position-stat">${formatAmount(marketValue)}</div>
-          </div>
-          <div>
-            <label>Cost basis</label>
-            <div class="position-stat">${formatAmount(costBasis)}</div>
-          </div>
-          <div>
-            <label>Unrealized P&amp;L</label>
-            <div class="position-stat ${pnlClass}">${pnlSign}${formatAmount(pnl)}</div>
-          </div>
-        </div>
-        <div class="position-actions">
-          <button class="secondary" data-action="save">Save edit</button>
-          <button class="ghost danger" data-action="delete">Delete</button>
-        </div>
-      </article>
-    `;
+      </div>`;
   }).join("");
+
+  els.positions.innerHTML = `
+    <div class="position-table-header">
+      <div></div>
+      <button type="button" data-sort-key="asset" class="${sortState.key === "asset" ? "is-active" : ""}">Asset${renderSortIcon("asset", sortState)}</button>
+      <button type="button" data-sort-key="allocation" class="${sortState.key === "allocation" ? "is-active" : ""}">Allocation${renderSortIcon("allocation", sortState)}</button>
+      <button type="button" data-sort-key="pnl" class="${sortState.key === "pnl" ? "is-active" : ""}">P&amp;L${renderSortIcon("pnl", sortState)}</button>
+      <div></div>
+    </div>
+    ${rowsHtml}
+  `;
+  syncTradeFormState();
 }
 
 function renderFeed() {
@@ -786,76 +1010,135 @@ function renderFeed() {
   renderMemberSnapshots();
 
   if (!signals.length) {
-    els.feed.innerHTML = `<div class="feed-empty">No percentage signals yet. Apply a local move first.</div>`;
+    els.feed.innerHTML = `<div class="feed-empty">No signals yet — sync to pull your group's feed.</div>`;
     return;
   }
 
+  // Group by time bucket
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfWeek = new Date(startOfToday.getTime() - 6 * 24 * 60 * 60 * 1000);
+
+  const groups = { today: [], week: [], earlier: [] };
   for (const signal of signals) {
-    const node = els.template.content.cloneNode(true);
-    const item = node.querySelector(".feed-item");
-    const avatar = node.querySelector(".avatar");
-    const tickerBadge = node.querySelector(".feed-ticker-badge");
-    const line = node.querySelector(".feed-line");
-    const note = node.querySelector(".feed-note");
-    const meta = node.querySelector(".feed-meta");
-
-    avatar.textContent = initials(signal.author);
-    tickerBadge.textContent = signal.asset;
-    line.innerHTML = `<strong>${escapeHtml(signal.author)}</strong> ${escapeHtml(signal.action.toLowerCase())}${signal.moveSize ? ` <span class="move-size">by ${escapeHtml(signal.moveSize)}</span>` : ""}. <span class="feed-exposure">New exposure: <strong class="accent-dim">${escapeHtml(formatExposure(signal.newExposure))}</strong></span>`;
-    note.textContent = signal.note || "";
-    meta.textContent = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(signal.createdAt));
-
-    item.title = "Only percentage-based signals are shared.";
-    els.feed.appendChild(node);
+    const d = new Date(signal.createdAt);
+    if (d >= startOfToday) groups.today.push(signal);
+    else if (d >= startOfWeek) groups.week.push(signal);
+    else groups.earlier.push(signal);
   }
+
+  const renderGroup = (label, list) => {
+    if (!list.length) return "";
+
+    const items = list.map(signal => {
+      const node = els.template.content.cloneNode(true);
+      const item = node.querySelector(".feed-item");
+      const avatar = node.querySelector(".avatar");
+      const tickerBadge = node.querySelector(".feed-ticker-badge");
+      const line = node.querySelector(".feed-line");
+      const note = node.querySelector(".feed-note");
+      const meta = node.querySelector(".feed-meta");
+
+      avatar.textContent = initials(signal.author);
+      if (signal.kind === "import") {
+        tickerBadge.textContent = "IMPORT";
+        const top = (signal.snapshot || []).slice(0, 3).map((entry) => `${entry.asset} ${formatExposure(entry.exposure)}`).join(" · ");
+        line.innerHTML = `<strong>${escapeHtml(signal.author)}</strong> imported a portfolio snapshot with <strong class="accent-dim">${escapeHtml(String(signal.meta?.holdingsCount || signal.snapshot?.length || 0))}</strong> holding${(signal.meta?.holdingsCount || signal.snapshot?.length || 0) === 1 ? "" : "s"}.`;
+        note.textContent = top ? `Visible positions: ${top}` : "No holdings shared yet.";
+      } else if (signal.kind === "presence") {
+        tickerBadge.textContent = "PRESENCE";
+        const top = (signal.snapshot || []).slice(0, 3).map((entry) => `${entry.asset} ${formatExposure(entry.exposure)}`).join(" · ");
+        line.innerHTML = `<strong>${escapeHtml(signal.author)}</strong> synced into the circle.`;
+        note.textContent = top ? `Current visible positions: ${top}` : "No holdings shared yet.";
+      } else {
+        tickerBadge.textContent = signal.asset;
+        line.innerHTML = `<strong>${escapeHtml(signal.author)}</strong> ${escapeHtml(signal.action.toLowerCase())}${signal.moveSize ? ` <span class="move-size">by ${escapeHtml(signal.moveSize)}</span>` : ""}. <span class="feed-exposure">Now: <strong class="accent-dim">${escapeHtml(formatExposure(signal.newExposure))}</strong></span>`;
+        note.textContent = signal.note || "";
+      }
+      meta.textContent = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(signal.createdAt));
+
+      const frag = document.createDocumentFragment();
+      frag.appendChild(node);
+      const div = document.createElement("div");
+      div.appendChild(frag);
+      return div.innerHTML;
+    }).join("");
+
+    return `<div class="feed-date-group"><div class="feed-date-label">${escapeHtml(label)}</div><div class="feed">${items}</div></div>`;
+  };
+
+  els.feed.innerHTML = [
+    renderGroup("Today", groups.today),
+    renderGroup("This week", groups.week),
+    renderGroup("Earlier", groups.earlier),
+  ].join("");
 }
 
 function handlePositionsClick(event) {
-  const button = event.target.closest("button[data-action]");
-  if (!button) return;
-
-  const card = button.closest("[data-asset]");
-  const asset = card?.dataset.asset;
-  if (!asset) return;
-
-  if (button.dataset.action === "save") {
-    savePositionCard(card, asset);
+  const sortButton = event.target.closest("button[data-sort-key]");
+  if (sortButton) {
+    updatePositionSort(sortButton.dataset.sortKey);
     return;
   }
 
-  if (button.dataset.action === "delete") {
-    deletePosition(asset);
+  const button = event.target.closest("button[data-action]");
+
+  // Save / delete inside an expanded detail panel
+  if (button) {
+    const detail = button.closest(".position-detail");
+    const asset = detail?.dataset.detailFor;
+    if (!asset) return;
+    if (button.dataset.action === "save") savePositionDetail(detail, asset);
+    if (button.dataset.action === "delete") deletePosition(asset);
+    return;
+  }
+
+  // Clicking a row toggles its detail panel
+  const row = event.target.closest(".position-row");
+  if (!row) return;
+  const asset = row.dataset.asset;
+  if (!asset) return;
+
+  const detail = els.positions.querySelector(`[data-detail-for="${CSS.escape(asset)}"]`);
+  if (!detail) return;
+
+  const isOpen = detail.classList.contains("open");
+
+  // Close all open panels first
+  els.positions.querySelectorAll(".position-detail.open").forEach(d => {
+    d.classList.remove("open");
+    const r = els.positions.querySelector(`.position-row[data-asset="${CSS.escape(d.dataset.detailFor)}"]`);
+    if (r) r.classList.remove("expanded");
+  });
+
+  if (!isOpen) {
+    detail.classList.add("open");
+    row.classList.add("expanded");
   }
 }
 
-function savePositionCard(card, asset) {
-  const quantity = parseNumber(card.querySelector('[data-field="quantity"]').value);
-  const avgPrice = parseNumber(card.querySelector('[data-field="avgPrice"]').value);
-  const markPrice = parseNumber(card.querySelector('[data-field="markPrice"]').value);
+function savePositionDetail(detail, asset) {
+  const quantity = parseNumber(detail.querySelector('[data-field="quantity"]').value);
+  const avgPrice = parseNumber(detail.querySelector('[data-field="avgPrice"]').value);
+  const markPrice = parseNumber(detail.querySelector('[data-field="markPrice"]').value);
 
   if (!(quantity >= 0)) return toast("Shares must be zero or higher.");
   if (!(avgPrice >= 0)) return toast("Average price must be zero or higher.");
   if (!(markPrice >= 0)) return toast("Mark price must be zero or higher.");
 
-  const positions = storage.positions.map((position) => ({ ...position }));
-  const index = positions.findIndex((position) => position.asset === asset);
+  const positions = storage.positions.map(p => ({ ...p }));
+  const index = positions.findIndex(p => p.asset === asset);
   if (index < 0) return;
 
   if (quantity === 0) {
     positions.splice(index, 1);
   } else {
-    positions[index] = {
-      asset,
-      quantity,
-      avgPrice,
-      markPrice,
-      updatedAt: new Date().toISOString(),
-    };
+    positions[index] = { asset, quantity, avgPrice, markPrice, updatedAt: new Date().toISOString() };
   }
 
   storage.positions = sortPositions(positions);
   renderPortfolio();
-  toast("Local holding updated.");
+  toast("Position updated.");
 }
 
 function deletePosition(asset) {
@@ -863,6 +1146,20 @@ function deletePosition(asset) {
   storage.positions = storage.positions.filter((position) => position.asset !== asset);
   renderPortfolio();
   toast("Local holding removed.");
+}
+
+function renderSortIcon(key, sortState) {
+  if (sortState.key !== key) return `<span class="material-symbols-outlined sort-icon">unfold_more</span>`;
+  return `<span class="material-symbols-outlined sort-icon">${sortState.direction === "asc" ? "arrow_upward" : "arrow_downward"}</span>`;
+}
+
+function updatePositionSort(nextKey) {
+  const current = storage.positionSort;
+  const defaultDirection = nextKey === "asset" ? "asc" : "desc";
+  storage.positionSort = current.key === nextKey
+    ? { key: nextKey, direction: current.direction === "asc" ? "desc" : "asc" }
+    : { key: nextKey, direction: defaultDirection };
+  renderPortfolio();
 }
 
 function resetPortfolio() {
@@ -891,51 +1188,178 @@ function clearFeed() {
   renderFeed();
 }
 
+function getTradeFormCollapsedPreference() {
+  return sessionStorage.getItem("exposure.tradeFormCollapsed");
+}
+
+function setTradeFormCollapsed(collapsed, { persist = true, focus = false } = {}) {
+  if (!els.tradeFormCard || !els.tradeFormToggleBtn || !els.tradeFormHint) return;
+
+  els.tradeFormCard.classList.toggle("collapsed", collapsed);
+  els.tradeFormToggleBtn.setAttribute("aria-expanded", String(!collapsed));
+
+  const icon = els.tradeFormToggleBtn.querySelector(".material-symbols-outlined");
+  const label = els.tradeFormToggleBtn.querySelector(".trade-toggle-label");
+  if (icon) icon.textContent = collapsed ? "add" : "remove";
+  if (label) label.textContent = collapsed ? "Quick add" : "Collapse";
+
+  els.tradeFormHint.textContent = collapsed
+    ? "Keep the form tucked away until you need the next move."
+    : "Record a local move and share only the percentage signal.";
+
+  if (persist) {
+    sessionStorage.setItem("exposure.tradeFormCollapsed", collapsed ? "1" : "0");
+  }
+
+  if (!collapsed && focus) {
+    requestAnimationFrame(() => els.tradeAsset?.focus());
+  }
+}
+
+function syncTradeFormState() {
+  if (!els.tradeFormCard) return;
+
+  if (!isDesktop()) {
+    setTradeFormCollapsed(false, { persist: false });
+    return;
+  }
+
+  if (!storage.positions.length) {
+    setTradeFormCollapsed(false, { persist: false });
+    return;
+  }
+
+  const stored = getTradeFormCollapsedPreference();
+  setTradeFormCollapsed(stored == null ? true : stored === "1", { persist: false });
+}
+
+function toggleTradeForm() {
+  const collapsed = els.tradeFormCard.classList.contains("collapsed");
+  setTradeFormCollapsed(!collapsed, { persist: true, focus: collapsed });
+}
+
+function formatRelativeTime(dateString) {
+  if (!dateString) return "";
+
+  const date = new Date(dateString);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const diffMs = date.getTime() - Date.now();
+  const absMinutes = Math.round(Math.abs(diffMs) / 60000);
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+  if (absMinutes < 1) return "just now";
+  if (absMinutes < 60) return rtf.format(Math.round(diffMs / 60000), "minute");
+
+  const absHours = Math.round(absMinutes / 60);
+  if (absHours < 24) return rtf.format(Math.round(diffMs / 3600000), "hour");
+
+  const absDays = Math.round(absHours / 24);
+  if (absDays < 7) return rtf.format(Math.round(diffMs / 86400000), "day");
+
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(date);
+}
+
+function updateLastSyncedLabel() {
+  if (!els.lastSyncedLabel) return;
+
+  const lastSyncedAt = storage.lastSyncedAt;
+  if (!lastSyncedAt) {
+    els.lastSyncedLabel.textContent = "Not synced yet";
+    return;
+  }
+
+  els.lastSyncedLabel.textContent = `Last synced ${formatRelativeTime(lastSyncedAt)}`;
+}
+
+function setSyncBusyState(isBusy) {
+  [els.syncBtn, els.syncBtn2].filter(Boolean).forEach((button) => {
+    const icon = button.querySelector(".material-symbols-outlined");
+    const textNode = [...button.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+    const defaultLabel = button.dataset.defaultLabel || textNode?.textContent.trim() || "Sync";
+    const defaultIcon = button.dataset.defaultIcon || icon?.textContent.trim() || "sync";
+
+    button.dataset.defaultLabel = defaultLabel;
+    button.dataset.defaultIcon = defaultIcon;
+    button.disabled = isBusy || Boolean(getEnvironmentRestriction());
+    button.classList.toggle("is-syncing", isBusy);
+    button.setAttribute("aria-busy", String(isBusy));
+
+    if (icon) icon.textContent = isBusy ? "autorenew" : defaultIcon;
+    if (textNode) textNode.textContent = isBusy ? ` ${defaultLabel}...` : ` ${defaultLabel}`;
+  });
+
+  if (isBusy && els.lastSyncedLabel) els.lastSyncedLabel.textContent = "Syncing feed...";
+  if (!isBusy) updateLastSyncedLabel();
+  if (!isBusy) syncEnvironmentState();
+}
+
 async function syncFeed() {
+  const syncBlockMessage = getSyncBlockMessage();
+  if (syncBlockMessage) {
+    toast(syncBlockMessage);
+    return;
+  }
+
   const groupId = normalizeGroup(els.groupId.value);
   const passphrase = els.passphrase.value;
   if (!groupId) return toast("Add a group name.");
   if (passphrase.length < 8) return toast("Use a group passphrase of at least 8 characters.");
 
-  const signals = storage.signals;
-  const remoteIds = storage.remoteIds;
+  setSyncBusyState(true);
 
-  for (const signal of signals) {
-    if (remoteIds.has(signal.id)) continue;
-    const encrypted = await encryptJson(signal, passphrase, groupId);
-    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/events`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: signal.id, blob: encrypted }),
-    });
-    if (!res.ok) return toast("Upload failed.");
-    remoteIds.add(signal.id);
-  }
+  try {
+    ensurePresenceEvent();
+    const signals = storage.signals;
+    const remoteIds = storage.remoteIds;
 
-  const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/events`);
-  if (!res.ok) return toast("Download failed.");
-
-  const remote = await res.json();
-  const byId = new Map(storage.signals.map((signal) => [signal.id, signal]));
-
-  for (const event of remote.events || []) {
-    remoteIds.add(event.id);
-    if (byId.has(event.id)) continue;
-    try {
-      const signal = await decryptJson(event.blob, passphrase, groupId);
-      byId.set(signal.id, signal);
-    } catch {
-      console.warn("Could not decrypt event", event.id);
+    for (const signal of signals) {
+      if (remoteIds.has(signal.id)) continue;
+      const encrypted = await encryptJson(signal, passphrase, groupId);
+      const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: signal.id, blob: encrypted }),
+      });
+      if (!res.ok) return toast("Upload failed.");
+      remoteIds.add(signal.id);
     }
-  }
 
-  storage.remoteIds = remoteIds;
-  storage.signals = [...byId.values()].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  renderFeed();
-  toast("Synced encrypted percentage feed.");
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/events`);
+    if (!res.ok) return toast("Download failed.");
+
+    const remote = await res.json();
+    const byId = new Map(storage.signals.map((signal) => [signal.id, signal]));
+
+    for (const event of remote.events || []) {
+      remoteIds.add(event.id);
+      if (byId.has(event.id)) continue;
+      try {
+        const signal = await decryptJson(event.blob, passphrase, groupId);
+        byId.set(signal.id, signal);
+      } catch {
+        console.warn("Could not decrypt event", event.id);
+      }
+    }
+
+    storage.remoteIds = remoteIds;
+    storage.signals = [...byId.values()].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    storage.lastSyncedAt = new Date().toISOString();
+    renderFeed();
+    updateLastSyncedLabel();
+    toast("Synced encrypted percentage feed.");
+  } catch (error) {
+    console.warn("Sync failed", error);
+    toast("Sync failed. Check that you opened the app from the server URL and that the server is reachable.");
+  } finally {
+    setSyncBusyState(false);
+  }
 }
 
 async function exportFeed() {
+  const syncBlockMessage = getSyncBlockMessage();
+  if (syncBlockMessage) return toast(syncBlockMessage);
+
   const groupId = normalizeGroup(els.groupId.value);
   const passphrase = els.passphrase.value;
   if (passphrase.length < 8) return toast("Use a group passphrase first.");
@@ -1042,59 +1466,139 @@ function deriveMemberPositions(signals) {
     if (!state.has(signal.author)) state.set(signal.author, { positions: new Map(), lastActive: null });
     const m = state.get(signal.author);
     m.lastActive = signal.createdAt;
+
+    if (signal.kind === "import" || signal.kind === "presence") {
+      m.positions = new Map((signal.snapshot || []).map((entry) => [entry.asset, entry.exposure]));
+      continue;
+    }
+
     if (signal.newExposure === 0) m.positions.delete(signal.asset);
     else m.positions.set(signal.asset, signal.newExposure);
   }
   return state;
 }
 
+function renderMemberProfileDetail(activeMembers, colorMap) {
+  if (!els.memberProfilePanel) return;
+
+  if (!activeMembers.length) {
+    els.memberProfilePanel.innerHTML = "";
+    return;
+  }
+
+  const selected = activeMembers.find(([author]) => author === selectedMemberName) || activeMembers[0];
+  const [author, { positions, lastActive }] = selected;
+  const holdings = [...positions.entries()].sort((a, b) => b[1] - a[1]);
+  const segments = holdings.map(([asset, pct]) => ({ label: asset, value: pct, color: colorMap.get(asset) }));
+
+  selectedMemberName = author;
+
+  const holdingsHtml = holdings.length
+    ? holdings.map(([asset, pct]) => `
+    <div class="member-holding-row">
+      <div class="member-holding-topline">
+        <span class="member-holding-name">${escapeHtml(asset)}</span>
+        <span class="member-holding-pct">${formatExposure(pct)}</span>
+      </div>
+      <div class="member-holding-track">
+        <div class="member-holding-bar" style="width:${Math.min(100, pct)}%;background:${colorMap.get(asset)}"></div>
+      </div>
+    </div>`).join("")
+    : `<div class="member-empty-holdings">No portfolio snapshot shared yet.</div>`;
+
+  els.memberProfilePanel.innerHTML = `
+    <section class="member-profile-card">
+      <div class="member-profile-head">
+        <div>
+          <div class="snapshots-label">Member Profile</div>
+          <h3>${escapeHtml(author)}</h3>
+          <p class="member-profile-meta">Latest shared allocation · ${escapeHtml(formatRelativeTime(lastActive))}</p>
+        </div>
+        <div class="member-profile-chart">${createDonutSvg(segments, 92)}</div>
+      </div>
+      <div class="member-holdings-list">
+        ${holdingsHtml}
+      </div>
+    </section>
+  `;
+}
+
+function handleMemberSnapshotsClick(event) {
+  const card = event.target.closest("[data-member-name]");
+  if (!card) return;
+  selectedMemberName = card.dataset.memberName || "";
+  renderMemberSnapshots();
+}
+
 function renderMemberSnapshots() {
-  const container = document.getElementById("memberSnapshots");
+  const container = els.memberSnapshots;
   const signals = storage.signals;
 
-  if (!signals.length) { container.innerHTML = ""; return; }
+  if (!signals.length) {
+    container.innerHTML = `
+      <div class="feed-empty">
+        Sync the node to see where each member is positioned right now.
+      </div>`;
+    if (els.memberProfilePanel) els.memberProfilePanel.innerHTML = "";
+    return;
+  }
 
   const memberState = deriveMemberPositions(signals);
-  const active = [...memberState.entries()].filter(([, { positions }]) => positions.size > 0);
-  if (!active.length) { container.innerHTML = ""; return; }
+  const members = [...memberState.entries()].sort((a, b) => new Date(b[1].lastActive || 0) - new Date(a[1].lastActive || 0));
+  if (!members.length) {
+    container.innerHTML = `
+      <div class="feed-empty">
+        No live member allocations yet. Post or sync a signal to populate the roster.
+      </div>`;
+    if (els.memberProfilePanel) els.memberProfilePanel.innerHTML = "";
+    return;
+  }
 
   // Assign consistent colours across all members by asset name
-  const allAssets = new Set(active.flatMap(([, { positions }]) => [...positions.keys()]));
+  const allAssets = new Set(members.flatMap(([, { positions }]) => [...positions.keys()]));
   const colorMap = new Map([...allAssets].sort().map((asset, i) => [asset, ASSET_COLORS[i % ASSET_COLORS.length]]));
 
-  const cards = active.map(([author, { positions }]) => {
-    const sorted = [...positions.entries()].sort((a, b) => b[1] - a[1]);
-    const segments = sorted.map(([asset, pct]) => ({ label: asset, value: pct, color: colorMap.get(asset) }));
-    const top = sorted.slice(0, 4);
-    const more = sorted.length - top.length;
+  const cards = members
+    .map(([author, { positions, lastActive }], index) => {
+      const sorted = [...positions.entries()].sort((a, b) => b[1] - a[1]);
+      const top = sorted.slice(0, 3);
+      const more = sorted.length - top.length;
+      const avatarColor = AVATAR_COLORS[index % AVATAR_COLORS.length];
 
-    const legendHtml = [
-      ...top.map(([asset, pct]) => `
-        <div class="legend-item">
-          <div class="legend-dot" style="background:${colorMap.get(asset)}"></div>
-          <span class="legend-label">${escapeHtml(asset)}</span>
-          <span class="legend-pct">${Number(pct).toFixed(1)}%</span>
-        </div>`),
-      more > 0 ? `<div class="legend-item"><span class="legend-label muted">+${more} more</span></div>` : "",
-    ].join("");
+      const holdingsHtml = top.length ? [
+        ...top.map(([asset, pct]) => `
+          <div class="alloc-row">
+            <div class="alloc-ticker">${escapeHtml(asset)}</div>
+            <div class="alloc-bar-track">
+              <div class="alloc-bar" style="width:${Math.min(100, pct)}%;background:${colorMap.get(asset)}"></div>
+            </div>
+            <div class="alloc-pct">${formatExposure(pct)}</div>
+          </div>`),
+        more > 0 ? `<div class="alloc-row"><div class="alloc-pct">+${more} more</div></div>` : "",
+      ].join("") : `<div class="member-card-empty">No shared holdings yet</div>`;
 
-    return `
-      <div class="snapshot-card">
-        <div class="snapshot-author">
-          <div class="snapshot-avatar">${escapeHtml(initials(author))}</div>
-          <span class="snapshot-name">${escapeHtml(author)}</span>
-        </div>
-        <div class="snapshot-body">
-          <div class="snapshot-chart">${createDonutSvg(segments, 60)}</div>
-          <div class="snapshot-legend">${legendHtml}</div>
-        </div>
-      </div>`;
-  }).join("");
+      return `
+        <article class="member-card-v2 ${selectedMemberName === author ? "is-selected" : ""}" data-member-name="${escapeAttribute(author)}" role="button" tabindex="0" aria-label="Open ${escapeAttribute(author)} profile">
+          <div class="member-card-head">
+            <div class="snapshot-avatar" style="background:${avatarColor.bg};color:${avatarColor.text};">${escapeHtml(initials(author))}</div>
+            <div class="member-card-name">${escapeHtml(author)}</div>
+            <div class="member-card-time">${escapeHtml(formatRelativeTime(lastActive))}</div>
+          </div>
+          ${holdingsHtml}
+        </article>`;
+    })
+    .join("");
+
+  if (!selectedMemberName || !members.some(([author]) => author === selectedMemberName)) {
+    selectedMemberName = members[0][0];
+  }
 
   container.innerHTML = `
-    <div class="snapshots-label">Member Allocations</div>
-    <div class="snapshots-grid">${cards}</div>
+    <div class="snapshots-label">Members Right Now</div>
+    <div class="member-cards-grid">${cards}</div>
   `;
+
+  renderMemberProfileDetail(members, colorMap);
 }
 
 function computeExposureMap(positions) {
@@ -1111,8 +1615,30 @@ function effectiveMarkPrice(position) {
   return position.markPrice > 0 ? position.markPrice : position.avgPrice;
 }
 
-function sortPositions(positions) {
-  return [...positions].sort((a, b) => a.asset.localeCompare(b.asset));
+function sortPositions(positions, sortState = DEFAULT_POSITION_SORT, exposures = computeExposureMap(positions)) {
+  const direction = sortState.direction === "asc" ? 1 : -1;
+
+  const sorted = [...positions].sort((a, b) => {
+    if (sortState.key === "asset") {
+      return a.asset.localeCompare(b.asset) * direction;
+    }
+
+    if (sortState.key === "allocation") {
+      const diff = ((exposures.get(a.asset) || 0) - (exposures.get(b.asset) || 0)) * direction;
+      if (diff !== 0) return diff > 0 ? 1 : -1;
+    }
+
+    if (sortState.key === "pnl") {
+      const pnlA = a.quantity * effectiveMarkPrice(a) - a.quantity * a.avgPrice;
+      const pnlB = b.quantity * effectiveMarkPrice(b) - b.quantity * b.avgPrice;
+      const diff = (pnlA - pnlB) * direction;
+      if (diff !== 0) return diff > 0 ? 1 : -1;
+    }
+
+    return a.asset.localeCompare(b.asset);
+  });
+
+  return sorted;
 }
 
 function setupInstallPrompt() {
