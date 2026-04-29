@@ -6,38 +6,205 @@ if (!ticker) {
 
 let promptText = null;
 let pendingRefreshTimer = null;
+let pollingAttemptCount = 0;
+let aiStatusLoaded = false;
+
+const FINANCIALS_RETRYABLE_STATUSES = new Set([404, 425, 503, 504]);
 
 function getElement(id) {
   return document.getElementById(id);
 }
 
+function setStatus(kind, state, message) {
+  const pill = getElement(`${kind}StatusPill`);
+  const text = getElement(`${kind}StatusText`);
+  if (!pill || !text) return;
+
+  pill.className = `status-pill status-${state}`;
+  text.textContent = message;
+}
+
+function clearPendingRefreshTimer() {
+  if (pendingRefreshTimer) {
+    clearTimeout(pendingRefreshTimer);
+    pendingRefreshTimer = null;
+  }
+}
+
+function scheduleReload(delayMs = 8000) {
+  clearPendingRefreshTimer();
+  pendingRefreshTimer = setTimeout(() => {
+    loadCompanyPage({ silent: true }).catch(() => {});
+  }, delayMs);
+}
+
+function setPendingState(message, visible = true) {
+  const pendingNotice = getElement("pendingNotice");
+  const pendingNoticeText = getElement("pendingNoticeText");
+  if (pendingNoticeText && message) pendingNoticeText.textContent = message;
+  pendingNotice.style.display = visible ? "flex" : "none";
+}
+
+function syncActionButtons({ hasFinancials = false, isLoading = false } = {}) {
+  const copyPromptButton = getElement("copyPromptBtn");
+  const generateButton = getElement("generateBtn");
+  const retryButton = getElement("retrySecBtn");
+
+  copyPromptButton.disabled = !hasFinancials;
+  generateButton.disabled = isLoading || !hasFinancials;
+  generateButton.title = hasFinancials ? "" : "Waiting for SEC financial data";
+  if (retryButton) retryButton.disabled = isLoading;
+}
+
+async function ensureCompanyRegistered(force = false) {
+  const registerResponse = await fetch(`/api/companies/${encodeURIComponent(ticker)}/register${force ? "?force=1" : ""}`, {
+    method: "POST",
+  });
+
+  if (!registerResponse.ok) {
+    let detail = "Ticker registration failed.";
+    try {
+      const payload = await registerResponse.json();
+      detail = payload.error || detail;
+    } catch {
+      // Ignore non-JSON bodies.
+    }
+    throw new Error(detail);
+  }
+
+  return registerResponse.json();
+}
+
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  return { response, payload };
+}
+
+async function refreshAiStatus() {
+  setStatus("ai", "loading", aiStatusLoaded ? "AI status: refreshing" : "AI status: checking");
+
+  try {
+    const { response, payload } = await fetchJson("/api/ai/status");
+    if (!response.ok || !payload) {
+      setStatus("ai", "error", "AI status: unavailable");
+      aiStatusLoaded = true;
+      return;
+    }
+
+    const state = payload.state || (payload.ok ? "ready" : "error");
+    if (state === "ready") {
+      setStatus("ai", "ready", "AI status: ready");
+    } else if (state === "warning") {
+      setStatus("ai", "warning", "AI status: reachable, model not loaded");
+    } else {
+      setStatus("ai", "error", "AI status: offline");
+    }
+  } catch {
+    setStatus("ai", "error", "AI status: offline");
+  }
+
+  aiStatusLoaded = true;
+}
+
+async function retrySecFetch() {
+  setStatus("sec", "loading", "SEC status: retrying");
+  setPendingState("Retrying SEC EDGAR fetch for this ticker.", true);
+  promptText = null;
+  pollingAttemptCount = 0;
+  syncActionButtons({ hasFinancials: false, isLoading: true });
+
+  try {
+    await ensureCompanyRegistered(true);
+    await loadCompanyPage();
+    showToast("SEC retry started.");
+  } catch (error) {
+    setStatus("sec", "error", "SEC status: retry failed");
+    setPendingState("Could not restart SEC enrichment for this ticker.", true);
+    syncActionButtons({ hasFinancials: false, isLoading: false });
+    showToast(error.message || "SEC retry failed.");
+  }
+}
+
 async function loadCompanyPage() {
   if (!ticker) return;
 
+  syncActionButtons({ hasFinancials: Boolean(promptText), isLoading: false });
+  if (!aiStatusLoaded) refreshAiStatus().catch(() => {});
+
+  let company = null;
+  let reports = [];
+
   try {
-    const res = await fetch(`/api/companies/${encodeURIComponent(ticker)}`);
-    if (!res.ok) throw new Error("Company fetch failed");
-    const { company, reports } = await res.json();
-    renderHero(company);
-    renderReports(reports);
-  } catch {
-    showToast("Failed to load company data.");
+    const { payload } = await ensureCompanyRegistered();
+    company = payload?.company || null;
+    reports = payload?.reports || [];
+    setStatus("sec", "loading", "SEC status: requested");
+  } catch (error) {
+    setPendingState("Could not register this ticker for SEC lookup.", true);
+    setStatus("sec", "error", "SEC status: request failed");
+    syncActionButtons({ hasFinancials: false, isLoading: false });
+    showToast(error.message || "Failed to start SEC lookup.");
+    return;
   }
 
   try {
-    const res = await fetch(`/api/companies/${encodeURIComponent(ticker)}/financials`);
-    if (res.ok) {
-      const data = await res.json();
+    const { response, payload } = await fetchJson(`/api/companies/${encodeURIComponent(ticker)}`);
+    if (!response.ok) throw new Error(payload?.error || "Company fetch failed");
+    company = payload?.company || company;
+    reports = payload?.reports || reports;
+    renderHero(company);
+    renderReports(reports);
+  } catch (error) {
+    renderHero(company || { ticker });
+    renderReports(reports);
+    setPendingState("Preparing company page while SEC data loads.", true);
+    showToast(error.message || "Failed to load company data.");
+  }
+
+  try {
+    const { response, payload } = await fetchJson(`/api/companies/${encodeURIComponent(ticker)}/financials`);
+    if (response.ok) {
+      const data = payload || {};
       promptText = data.prompt;
       renderFilings(data.filings || []);
-      getElement("copyPromptBtn").disabled = false;
-    } else {
-      promptText = null;
-      getElement("copyPromptBtn").disabled = true;
+      pollingAttemptCount = 0;
+      clearPendingRefreshTimer();
+      setPendingState("", false);
+      setStatus("sec", "ready", `SEC status: ready${(data.filings || []).length ? ` · ${(data.filings || []).length} filings` : ""}`);
+      syncActionButtons({ hasFinancials: true, isLoading: false });
+      return;
     }
+
+    promptText = null;
+    renderFilings([]);
+    syncActionButtons({ hasFinancials: false, isLoading: false });
+
+    if (FINANCIALS_RETRYABLE_STATUSES.has(response.status)) {
+      pollingAttemptCount += 1;
+      const retrySeconds = Math.min(8 + pollingAttemptCount * 2, 20);
+      setStatus("sec", "loading", `SEC status: loading · retry in ${retrySeconds}s`);
+      setPendingState(`SEC filings are still loading. Retrying in ${retrySeconds}s.`, true);
+      scheduleReload(retrySeconds * 1000);
+      return;
+    }
+
+    setStatus("sec", "error", "SEC status: unavailable");
+    setPendingState(payload?.error || "SEC data is unavailable for this ticker right now.", true);
+    showToast(payload?.error || "SEC data is unavailable right now.");
   } catch {
     promptText = null;
-    getElement("copyPromptBtn").disabled = true;
+    renderFilings([]);
+    syncActionButtons({ hasFinancials: false, isLoading: false });
+    pollingAttemptCount += 1;
+    setStatus("sec", "loading", "SEC status: retry scheduled");
+    setPendingState("SEC lookup is still in progress. The page will retry automatically.", true);
+    scheduleReload(Math.min(8000 + pollingAttemptCount * 2000, 20000));
   }
 }
 
@@ -84,18 +251,13 @@ function renderHero(company) {
     .map((info) => `<div class="info-item"><span class="info-label">${info.label}</span><span class="info-value">${info.value}</span></div>`)
     .join("");
 
-  const pendingNotice = getElement("pendingNotice");
-  pendingNotice.style.display = company?.enrichedAt ? "none" : "flex";
-
-  if (pendingRefreshTimer) {
-    clearTimeout(pendingRefreshTimer);
-    pendingRefreshTimer = null;
-  }
-
   if (!company?.enrichedAt) {
-    pendingRefreshTimer = setTimeout(() => {
-      loadCompanyPage().catch(() => {});
-    }, 8000);
+    setStatus("sec", "loading", "SEC status: loading");
+    setPendingState("Fetching SEC EDGAR data for this ticker.", true);
+  } else {
+    clearPendingRefreshTimer();
+    setStatus("sec", "ready", "SEC status: ready");
+    setPendingState("", false);
   }
 }
 
@@ -187,6 +349,11 @@ async function copyPrompt() {
 
 async function generateReport() {
   const button = getElement("generateBtn");
+  if (!promptText) {
+    showToast("SEC data is still loading. Wait for filings before generating a report.");
+    return;
+  }
+
   button.disabled = true;
   button.textContent = "Generating...";
 
@@ -198,8 +365,18 @@ async function generateReport() {
     const data = await res.json();
 
     if (!res.ok) {
-      showToast(data.error || "Generation failed.");
+      if (data?.error === "Could not reach LM Studio") {
+        setStatus("ai", "error", "AI status: offline");
+        showToast("Local AI is offline. SEC filings work without it, but report generation needs LM Studio.");
+      } else if (String(data?.error || "").includes("timed out")) {
+        setStatus("ai", "warning", "AI status: timed out");
+        showToast(data.error || "Generation failed.");
+      } else {
+        setStatus("ai", "warning", "AI status: not ready");
+        showToast(data.error || "Generation failed.");
+      }
     } else {
+      setStatus("ai", "ready", "AI status: ready");
       showToast("Report generated.");
       await loadCompanyPage();
     }
@@ -234,6 +411,9 @@ function showToast(message) {
 
 getElement("copyPromptBtn").addEventListener("click", copyPrompt);
 getElement("generateBtn").addEventListener("click", generateReport);
+getElement("retrySecBtn").addEventListener("click", retrySecFetch);
+
+syncActionButtons({ hasFinancials: false, isLoading: false });
 
 loadCompanyPage().catch(() => {
   showToast("Failed to load company data.");

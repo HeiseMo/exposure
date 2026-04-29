@@ -149,13 +149,58 @@ app.get("/api/companies/:ticker", (req, res) => {
   res.json({ company, reports });
 });
 
+app.get("/api/ai/status", async (_req, res) => {
+  const lmUrl = process.env.LM_STUDIO_URL || "http://localhost:1234";
+  const model = process.env.LM_STUDIO_MODEL || "local-model";
+
+  try {
+    const statusRes = await fetch(`${lmUrl}/v1/models`, {
+      signal: AbortSignal.timeout(4_000),
+    });
+
+    if (!statusRes.ok) {
+      return res.status(200).json({
+        ok: false,
+        state: "error",
+        model,
+        message: `LM Studio returned ${statusRes.status}`,
+      });
+    }
+
+    const data = await statusRes.json().catch(() => ({}));
+    const models = Array.isArray(data?.data)
+      ? data.data.map((entry) => entry?.id).filter(Boolean)
+      : [];
+    const configuredModelAvailable = models.length === 0 || models.includes(model);
+
+    res.json({
+      ok: true,
+      state: configuredModelAvailable ? "ready" : "warning",
+      model,
+      models,
+      message: configuredModelAvailable
+        ? `LM Studio reachable${models.includes(model) ? ` · ${model}` : ""}`
+        : `LM Studio reachable, but ${model} is not loaded`,
+    });
+  } catch (err) {
+    res.json({
+      ok: false,
+      state: "error",
+      model,
+      message: "LM Studio offline",
+      detail: err.message,
+    });
+  }
+});
+
 app.post("/api/companies/:ticker/register", (req, res) => {
   const ticker = normalizeTicker(req.params.ticker);
   if (!ticker) return res.status(400).json({ error: "Invalid ticker" });
   store.ensureCompany(ticker);
   const company = store.getCompany(ticker);
+  const force = req.query.force === "1";
 
-  if (!company.enrichedAt) {
+  if (force || !company.enrichedAt) {
     setImmediate(async () => {
       try {
         const data = await enrichCompany(ticker);

@@ -48,16 +48,19 @@ const els = {
   feed: $("feed"),
   memberSnapshots: $("memberSnapshots"),
   memberProfilePanel: $("memberProfilePanel"),
+  companiesList: $("companiesList"),
   lastSyncedLabel: $("lastSyncedLabel"),
   template: $("feedItemTemplate"),
   navActivity: $("navActivity"),
   navSignal: $("navSignal"),
   navSettings: $("navSettings"),
   navProfile: $("navProfile"),
+  navCompanies: $("navCompanies"),
   tabActivity: $("tab-activity"),
   tabSignal: $("tab-signal"),
   tabSettings: $("tab-settings"),
   tabProfile: $("tab-profile"),
+  tabCompanies: $("tab-companies"),
   togglePassphraseBtn: $("togglePassphraseBtn"),
   // Landing page
   landingView: $("landingView"),
@@ -247,7 +250,7 @@ function boot() {
   });
 
   // Mobile tab switching
-  ["navActivity", "navSignal", "navProfile", "navSettings"].forEach(id => {
+  ["navActivity", "navSignal", "navProfile", "navSettings", "navCompanies"].forEach(id => {
     if (els[id]) els[id].addEventListener("click", () => switchTab(els[id].dataset.tab));
   });
 
@@ -350,13 +353,14 @@ function switchTab(name) {
     // Desktop: both content columns always visible
     els.tabSignal.classList.add("active");
     els.tabActivity.classList.add("active");
+    if (els.tabCompanies) els.tabCompanies.classList.remove("active");
     // Settings and Profile are sliding panels; only one open at a time
     els.tabSettings.classList.toggle("panel-open", name === "settings");
     els.tabProfile.classList.toggle("panel-open", name === "profile");
     els.settingsBackdrop.classList.toggle("visible", name === "settings" || name === "profile");
   } else {
     // Mobile: show only the active tab panel
-    ["activity", "signal", "settings", "profile"].forEach(tab => {
+    ["activity", "signal", "settings", "profile", "companies"].forEach(tab => {
       document.getElementById(`tab-${tab}`).classList.toggle("active", tab === name);
       const btn = document.getElementById(`nav${tab.charAt(0).toUpperCase() + tab.slice(1)}`);
       if (btn) btn.classList.toggle("active", tab === name);
@@ -1066,6 +1070,7 @@ function renderFeed() {
   const signals = storage.signals;
   els.feed.innerHTML = "";
   renderMemberSnapshots();
+  renderCompanies();
 
   if (!signals.length) {
     els.feed.innerHTML = `<div class="feed-empty">No signals yet — sync to pull your group's feed.</div>`;
@@ -1651,6 +1656,67 @@ function deriveMemberPositions(signals) {
     else m.positions.set(signal.asset, signal.newExposure);
   }
   return state;
+}
+
+function deriveCollectiveCompanies(memberState) {
+  const companies = new Map();
+
+  for (const [, { positions, lastActive }] of memberState.entries()) {
+    for (const [asset, exposure] of positions.entries()) {
+      if (!companies.has(asset)) {
+        companies.set(asset, {
+          ticker: asset,
+          holderCount: 0,
+          totalExposure: 0,
+          lastActive,
+        });
+      }
+
+      const company = companies.get(asset);
+      company.holderCount += 1;
+      company.totalExposure += Number(exposure) || 0;
+      if (!company.lastActive || new Date(lastActive || 0) > new Date(company.lastActive || 0)) {
+        company.lastActive = lastActive;
+      }
+    }
+  }
+
+  return [...companies.values()].sort((left, right) => {
+    if (right.holderCount !== left.holderCount) return right.holderCount - left.holderCount;
+    if (right.totalExposure !== left.totalExposure) return right.totalExposure - left.totalExposure;
+    return left.ticker.localeCompare(right.ticker);
+  });
+}
+
+function renderCompanies() {
+  if (!els.companiesList) return;
+
+  const memberState = deriveMemberPositions(storage.signals);
+  const companies = deriveCollectiveCompanies(memberState);
+
+  if (!companies.length) {
+    els.companiesList.innerHTML = `
+      <div class="feed-empty">
+        No shared companies yet. Sync or post signals to build the circle list.
+      </div>`;
+    return;
+  }
+
+  els.companiesList.innerHTML = companies.map((company) => `
+    <a class="company-card" href="/company/${encodeURIComponent(company.ticker)}">
+      <div class="company-card-head">
+        <div>
+          <div class="company-card-ticker">${escapeHtml(company.ticker)}</div>
+          <div class="company-card-meta">Held by ${escapeHtml(String(company.holderCount))} member${company.holderCount === 1 ? "" : "s"}</div>
+        </div>
+        <span class="material-symbols-outlined company-card-arrow">arrow_forward</span>
+      </div>
+      <div class="company-card-stats">
+        <div class="company-stat-pill">${escapeHtml(formatExposure(company.totalExposure))} combined visible exposure</div>
+        <div class="company-card-time">${escapeHtml(formatRelativeTime(company.lastActive))}</div>
+      </div>
+    </a>
+  `).join("");
 }
 
 function renderMemberProfileDetail(activeMembers, colorMap) {
