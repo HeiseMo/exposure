@@ -22,9 +22,11 @@
       <span class="material-symbols-outlined">encrypted</span>
     </button>
     <span class="app-title font-grotesk">Exposure</span>
-    <div style="display:flex;align-items:center;gap:0.4rem;">
+    <div style="display:flex;align-items:center;gap:0.5rem;">
       <button id="installBtn" class="ghost hidden" style="font-size:0.76rem;padding:0.3rem 0.65rem;">Install</button>
-      <!-- Desktop settings button (hidden on mobile) -->
+      <!-- Avatar button — opens Profile panel on desktop, Profile tab on mobile -->
+      <button id="desktopProfileBtn" class="avatar-topbar-btn" aria-label="open profile" title="Profile"></button>
+      <!-- Gear — opens Settings panel on desktop -->
       <button id="desktopSettingsBtn" class="icon-btn desktop-only" aria-label="open settings">
         <span class="material-symbols-outlined">tune</span>
       </button>
@@ -37,9 +39,97 @@
     <span>AES-256 &middot; All data decrypted client-side</span>
   </div>
 
+  <!-- ══ LANDING PAGE ══ -->
+  <div id="landingView" class="landing-view">
+    <nav class="landing-nav">
+      <span class="app-title font-grotesk">Exposure</span>
+      <button id="landingNavEnterBtn" class="landing-nav-cta">Enter circle <span class="material-symbols-outlined">arrow_forward</span></button>
+    </nav>
+
+    <section class="landing-hero">
+      <div class="landing-hero-inner">
+        <div class="landing-eyebrow">
+          <span class="material-symbols-outlined">encrypted</span>
+          End-to-end encrypted &middot; Zero-knowledge
+        </div>
+        <h1 class="landing-headline">Share what you're in.<br>Not the numbers.</h1>
+        <p class="landing-sub">A private circle for serious investors. Post signals, see your group's moves — encrypted on your device before anything hits the server.</p>
+        <button id="landingHeroCta" class="landing-cta-btn">
+          Enter your circle
+          <span class="material-symbols-outlined">arrow_forward</span>
+        </button>
+        <div class="landing-trust-chips">
+          <span class="landing-chip"><span class="material-symbols-outlined">lock</span>AES-256-GCM</span>
+          <span class="landing-chip"><span class="material-symbols-outlined">key</span>PBKDF2-SHA256</span>
+          <span class="landing-chip"><span class="material-symbols-outlined">no_accounts</span>No sign-up</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="landing-features">
+      <div class="landing-features-grid">
+        <div class="landing-feature-card">
+          <span class="material-symbols-outlined landing-feat-icon">encrypted</span>
+          <h3>End-to-end encrypted</h3>
+          <p>Your passphrase never leaves your device. The server only sees encrypted blobs — it literally cannot read your data.</p>
+        </div>
+        <div class="landing-feature-card">
+          <span class="material-symbols-outlined landing-feat-icon">group</span>
+          <h3>Private circles</h3>
+          <p>Share a group ID and passphrase with people you trust. No public profiles, no algorithms, no social graph.</p>
+        </div>
+        <div class="landing-feature-card">
+          <span class="material-symbols-outlined landing-feat-icon">percent</span>
+          <h3>Signals, not positions</h3>
+          <p>You share percentage allocations, not exact share counts or prices. Stay private while staying connected.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="landing-how">
+      <h2 class="landing-section-title">How it works</h2>
+      <div class="landing-steps">
+        <div class="landing-step">
+          <div class="landing-step-num">01</div>
+          <div>
+            <strong>Create a circle</strong>
+            <p>Pick a group name and a shared passphrase. Share both out-of-band with your trusted group — that passphrase is your encryption key.</p>
+          </div>
+        </div>
+        <div class="landing-step">
+          <div class="landing-step-num">02</div>
+          <div>
+            <strong>Post signals</strong>
+            <p>Record moves locally. When you post, the signal is encrypted on your device before it reaches the server.</p>
+          </div>
+        </div>
+        <div class="landing-step">
+          <div class="landing-step-num">03</div>
+          <div>
+            <strong>See your circle</strong>
+            <p>Pull the feed. Only members who know the passphrase can decrypt and see what's been posted.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="landing-footer-cta">
+      <h2>Ready?</h2>
+      <p>No sign-up. No email. Just a group name and a passphrase.</p>
+      <button id="landingFooterCta" class="landing-cta-btn">
+        Enter your circle
+        <span class="material-symbols-outlined">arrow_forward</span>
+      </button>
+    </section>
+  </div>
+
   <!-- ══ ENTRY SCREEN ══ -->
-  <div id="entryView" class="entry-view">
+  <div id="entryView" class="entry-view hidden">
     <div class="entry-card">
+      <button id="entryBackBtn" class="entry-back-btn">
+        <span class="material-symbols-outlined">arrow_back</span>
+        Back
+      </button>
       <div class="entry-icon-wrap">
         <span class="material-symbols-outlined">encrypted</span>
       </div>
@@ -76,14 +166,8 @@
   <main id="dashboard" class="hidden">
     <div class="dashboard-grid">
 
-      <!-- Left column — Signal + Local Portfolio -->
+      <!-- Left column: Signal + Local Portfolio -->
       <section id="tab-signal" class="tab-panel col-left">
-
-        <!-- Display name -->
-        <div class="card">
-          <label for="displayName">Your display name</label>
-          <input id="displayName" placeholder="Timur" autocomplete="nickname" />
-        </div>
 
         <!-- Record move -->
         <div class="card">
@@ -131,6 +215,9 @@
         <!-- Portfolio summary (injected by JS) -->
         <div id="portfolioSummaryHeader" class="portfolio-summary-header hidden"></div>
 
+        <!-- Portfolio chart (injected by JS) -->
+        <div id="portfolioChart" class="portfolio-chart-card hidden"></div>
+
         <!-- Local portfolio -->
         <div class="card">
           <div class="section-head">
@@ -141,25 +228,12 @@
             </button>
           </div>
           <p id="portfolioSummary" class="small"></p>
-
-          <!-- Import -->
-          <div class="import-panel">
-            <label>Initial import &middot; local only</label>
-            <textarea id="importPortfolio" rows="3"
-              placeholder="ASML, 10, 915.2, 948.5&#10;AMZN, 5, 182.4"></textarea>
-            <p class="small">One line: asset, shares, avg price, optional mark price.</p>
-            <div class="row" style="margin-top:0.45rem;">
-              <button id="replaceImportBtn" class="secondary" style="font-size:0.76rem;">Replace</button>
-              <button id="mergeImportBtn" class="ghost" style="font-size:0.76rem;">Merge</button>
-            </div>
-          </div>
-
           <div id="positions" class="positions" style="margin-top:0.65rem;"></div>
         </div>
 
       </section>
 
-      <!-- Right column — Group feed -->
+      <!-- Right column: Group feed -->
       <section id="tab-activity" class="tab-panel col-right">
         <div class="tab-header">
           <h2>Signal Log</h2>
@@ -168,17 +242,111 @@
             Pull Feed
           </button>
         </div>
+        <!-- Member allocation charts -->
+        <div id="memberSnapshots"></div>
         <div id="feed" class="feed"></div>
       </section>
 
     </div><!-- end dashboard-grid -->
   </main>
 
+  <!-- ══ PROFILE PANEL (mobile: tab, desktop: sliding overlay) ══ -->
+  <div id="tab-profile" class="tab-panel profile-panel-wrap">
+    <div class="settings-panel-inner">
+
+      <!-- Desktop close button -->
+      <div class="section-head desktop-only" style="margin-bottom:1rem;">
+        <h3>Profile</h3>
+        <button id="closeProfileBtn" class="icon-btn" aria-label="close profile">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </div>
+
+      <!-- Identity -->
+      <div class="card">
+        <div class="field-label-caps">Identity</div>
+
+        <!-- Avatar preview + color picker -->
+        <div class="avatar-preview-row" style="margin-top:0.5rem;">
+          <div class="avatar-preview-large" id="avatarPreviewLarge"></div>
+          <div>
+            <div class="small" style="margin-bottom:0.5rem;">Avatar colour</div>
+            <div class="color-swatches" id="colorSwatches"></div>
+          </div>
+        </div>
+
+        <div style="margin-top:0.65rem;">
+          <label for="displayName">Display name</label>
+          <input id="displayName" placeholder="Timur" autocomplete="nickname" />
+        </div>
+      </div>
+
+      <!-- Scalable Capital import -->
+      <div class="card">
+        <div class="field-label-caps">Import from Scalable Capital</div>
+        <p class="small">Upload your "All transactions" CSV from Scalable Capital. Open positions with weighted average buy-in are computed automatically.</p>
+        <label class="file-upload-label" style="margin-top:0.6rem;">
+          <input type="file" id="scalableFileInput" accept=".csv,.txt" />
+          <span class="material-symbols-outlined">upload_file</span>
+          Choose CSV file
+        </label>
+        <div id="scalableImportStatus" class="import-status hidden"></div>
+        <div id="scalableImportActions" class="row hidden" style="margin-top:0.6rem;">
+          <button id="scalableReplaceBtn" class="primary" style="font-size:0.8rem;">
+            <span class="material-symbols-outlined">refresh</span>
+            Replace portfolio
+          </button>
+          <button id="scalableMergeBtn" class="ghost" style="font-size:0.8rem;">
+            <span class="material-symbols-outlined">merge</span>
+            Merge
+          </button>
+        </div>
+      </div>
+
+      <!-- Manual import -->
+      <div class="card">
+        <div class="field-label-caps">Manual import</div>
+        <textarea id="importPortfolio" rows="4"
+          placeholder="ASML, 10, 915.2, 948.5&#10;AMZN, 5, 182.4&#10;NVDA, 12, 130.0, 157.4"
+          style="margin-top:0.5rem;"></textarea>
+        <p class="small">One line per holding: asset, shares, avg price, optional mark price.</p>
+        <div class="row" style="margin-top:0.5rem;">
+          <button id="replaceImportBtn" class="secondary" style="font-size:0.78rem;">Replace</button>
+          <button id="mergeImportBtn" class="ghost" style="font-size:0.78rem;">Merge</button>
+        </div>
+      </div>
+
+      <!-- Danger zone -->
+      <div class="card danger-zone">
+        <div class="field-label-caps" style="color:var(--error);">Danger zone</div>
+        <div class="row" style="margin-top:0.45rem;">
+          <button id="resetPortfolioBtn2" class="ghost danger" style="font-size:0.76rem;">
+            <span class="material-symbols-outlined">delete_forever</span>
+            Reset portfolio
+          </button>
+          <button id="clearBtn" class="ghost danger" style="font-size:0.76rem;">
+            <span class="material-symbols-outlined">delete_forever</span>
+            Clear feed
+          </button>
+        </div>
+      </div>
+
+      <!-- Mobile: lock button -->
+      <div class="mobile-only" style="margin-top:0.5rem;padding-bottom:1rem;">
+        <button id="lockNodeBtn" class="ghost" style="width:100%;font-size:0.82rem;">
+          <span class="material-symbols-outlined">lock</span>
+          Lock &amp; return to entry screen
+        </button>
+      </div>
+
+    </div>
+  </div>
+
   <!-- ══ SETTINGS PANEL (mobile: tab, desktop: sliding overlay) ══ -->
   <div id="tab-settings" class="tab-panel settings-panel-wrap">
     <div class="settings-panel-inner">
 
-      <!-- Desktop: panel header with close button -->
+      <!-- Desktop close -->
       <div class="section-head desktop-only" style="margin-bottom:1rem;">
         <h3>Configuration</h3>
         <button id="closeSettingsBtn" class="icon-btn" aria-label="close settings">
@@ -186,7 +354,7 @@
         </button>
       </div>
 
-      <!-- Node identity -->
+      <!-- Group identity -->
       <div class="card">
         <div class="field-label-caps">Node identity</div>
         <div class="space-y">
@@ -231,7 +399,7 @@
         <p class="small">Sync uploads only encrypted percentage events. Prices and share counts stay on this device.</p>
       </div>
 
-      <!-- Shareable node link -->
+      <!-- Node link -->
       <div class="card">
         <div class="field-label-caps">Shareable node link</div>
         <p class="small" style="margin-bottom:0.45rem;">Friends enter this URL + the passphrase to view your group's % allocations.</p>
@@ -239,21 +407,6 @@
           <div id="nodeLinkDisplay" class="node-link-display" style="flex:1;"></div>
           <button id="copyNodeLinkBtn" class="icon-btn" aria-label="copy node link" style="flex-shrink:0;border:1px solid var(--border);border-radius:0.5rem;padding:0 0.6rem;">
             <span class="material-symbols-outlined">content_copy</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Danger zone -->
-      <div class="card danger-zone">
-        <div class="field-label-caps" style="color:var(--error);">Danger zone</div>
-        <div class="row" style="margin-top:0.45rem;">
-          <button id="clearBtn" class="ghost danger" style="font-size:0.76rem;">
-            <span class="material-symbols-outlined">delete_forever</span>
-            Clear feed
-          </button>
-          <button id="resetPortfolioBtn2" class="ghost danger" style="font-size:0.76rem;">
-            <span class="material-symbols-outlined">delete_forever</span>
-            Reset portfolio
           </button>
         </div>
       </div>
@@ -269,21 +422,13 @@
         </div>
       </div>
 
-      <!-- Mobile only: lock button -->
-      <div class="mobile-only" style="margin-top:0.5rem;padding-bottom:1rem;">
-        <button id="lockNodeBtn" class="ghost" style="width:100%;font-size:0.82rem;">
-          <span class="material-symbols-outlined">lock</span>
-          Lock &amp; return to entry screen
-        </button>
-      </div>
-
-    </div><!-- settings-panel-inner -->
+    </div>
   </div>
 
-  <!-- Settings backdrop (desktop overlay) -->
+  <!-- Settings / Profile backdrop -->
   <div id="settingsBackdrop" class="settings-backdrop"></div>
 
-  <!-- Mobile bottom nav -->
+  <!-- Mobile bottom nav (4 tabs) -->
   <nav class="bottom-nav">
     <button class="nav-btn" id="navActivity" data-tab="activity">
       <span class="material-symbols-outlined">dynamic_feed</span>
@@ -292,6 +437,10 @@
     <button class="nav-btn active" id="navSignal" data-tab="signal">
       <span class="material-symbols-outlined">add_box</span>
       <span class="nav-label">Signal</span>
+    </button>
+    <button class="nav-btn" id="navProfile" data-tab="profile">
+      <span class="material-symbols-outlined">person</span>
+      <span class="nav-label">Profile</span>
     </button>
     <button class="nav-btn" id="navSettings" data-tab="settings">
       <span class="material-symbols-outlined">tune</span>

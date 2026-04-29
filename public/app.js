@@ -1,5 +1,14 @@
 const $ = (id) => document.getElementById(id);
 
+const AVATAR_COLORS = [
+  { bg: "rgba(0,226,144,0.14)",   text: "#00e290" },
+  { bg: "rgba(96,165,250,0.14)",  text: "#60a5fa" },
+  { bg: "rgba(167,139,250,0.14)", text: "#a78bfa" },
+  { bg: "rgba(251,146,60,0.14)",  text: "#fb923c" },
+  { bg: "rgba(248,113,113,0.14)", text: "#f87171" },
+  { bg: "rgba(250,204,21,0.14)",  text: "#facc15" },
+];
+
 const els = {
   installBtn: $("installBtn"),
   displayName: $("displayName"),
@@ -31,22 +40,42 @@ const els = {
   navActivity: $("navActivity"),
   navSignal: $("navSignal"),
   navSettings: $("navSettings"),
+  navProfile: $("navProfile"),
   tabActivity: $("tab-activity"),
   tabSignal: $("tab-signal"),
   tabSettings: $("tab-settings"),
+  tabProfile: $("tab-profile"),
   togglePassphraseBtn: $("togglePassphraseBtn"),
+  // Landing page
+  landingView: $("landingView"),
+  landingNavEnterBtn: $("landingNavEnterBtn"),
+  landingHeroCta: $("landingHeroCta"),
+  landingFooterCta: $("landingFooterCta"),
   // Entry screen
   entryView: $("entryView"),
   entryGroupId: $("entryGroupId"),
   entryPassphrase: $("entryPassphrase"),
   enterNodeBtn: $("enterNodeBtn"),
+  entryBackBtn: $("entryBackBtn"),
   dashboard: $("dashboard"),
-  // Desktop settings panel
+  // Desktop panels
   desktopSettingsBtn: $("desktopSettingsBtn"),
+  desktopProfileBtn: $("desktopProfileBtn"),
   closeSettingsBtn: $("closeSettingsBtn"),
+  closeProfileBtn: $("closeProfileBtn"),
   settingsBackdrop: $("settingsBackdrop"),
   lockIconBtn: $("lockIconBtn"),
   lockNodeBtn: $("lockNodeBtn"),
+  // Profile / avatar
+  avatarPreviewLarge: $("avatarPreviewLarge"),
+  colorSwatches: $("colorSwatches"),
+  // Scalable import
+  scalableFileInput: $("scalableFileInput"),
+  scalableImportStatus: $("scalableImportStatus"),
+  scalableImportActions: $("scalableImportActions"),
+  scalableReplaceBtn: $("scalableReplaceBtn"),
+  scalableMergeBtn: $("scalableMergeBtn"),
+  copyNodeLinkBtn: $("copyNodeLinkBtn"),
 };
 
 const storage = {
@@ -84,8 +113,13 @@ function boot() {
   renderFeed();
   updateNodeLink();
 
+  initAvatarPicker();
+
   // Settings form listeners
-  els.displayName.addEventListener("input", () => localStorage.setItem("exposure.displayName", els.displayName.value.trim()));
+  els.displayName.addEventListener("input", () => {
+    localStorage.setItem("exposure.displayName", els.displayName.value.trim());
+    updateAvatarDisplay();
+  });
   els.groupId.addEventListener("input", () => {
     localStorage.setItem("exposure.groupId", normalizeGroup(els.groupId.value));
     updateNodeLink();
@@ -106,14 +140,23 @@ function boot() {
   });
 
   // Copy node link
-  document.getElementById("copyNodeLinkBtn").addEventListener("click", () => {
+  els.copyNodeLinkBtn.addEventListener("click", () => {
     const text = els.nodeLinkDisplay.textContent.trim();
     if (text.startsWith("http")) {
       navigator.clipboard.writeText(text)
         .then(() => toast("Node link copied."))
-        .catch(() => toast("Copy failed — try selecting the link manually."));
+        .catch(() => toast("Copy failed."));
     }
   });
+
+  // Scalable Capital CSV import
+  els.scalableFileInput.addEventListener("change", e => {
+    const file = e.target.files?.[0];
+    if (file) handleScalableFile(file);
+    e.target.value = "";
+  });
+  els.scalableReplaceBtn.addEventListener("click", () => confirmScalableImport("replace"));
+  els.scalableMergeBtn.addEventListener("click", () => confirmScalableImport("merge"));
 
   // Trade + portfolio actions
   els.applyTradeBtn.addEventListener("click", applyTrade);
@@ -136,13 +179,15 @@ function boot() {
   });
 
   // Mobile tab switching
-  ["navActivity", "navSignal", "navSettings"].forEach(id => {
-    els[id].addEventListener("click", () => switchTab(els[id].dataset.tab));
+  ["navActivity", "navSignal", "navProfile", "navSettings"].forEach(id => {
+    if (els[id]) els[id].addEventListener("click", () => switchTab(els[id].dataset.tab));
   });
 
-  // Desktop settings panel
+  // Desktop panels
   els.desktopSettingsBtn.addEventListener("click", () => switchTab("settings"));
+  els.desktopProfileBtn.addEventListener("click", () => switchTab("profile"));
   els.closeSettingsBtn.addEventListener("click", () => switchTab("signal"));
+  els.closeProfileBtn.addEventListener("click", () => switchTab("signal"));
   els.settingsBackdrop.addEventListener("click", () => switchTab("signal"));
 
   // Lock button (mobile settings tab) + topbar lock icon
@@ -151,12 +196,18 @@ function boot() {
     if (confirm("Lock this node? Your passphrase will be cleared.")) lockNode();
   });
 
+  // Landing page CTAs
+  [els.landingNavEnterBtn, els.landingHeroCta, els.landingFooterCta].forEach(btn => {
+    btn.addEventListener("click", showEntryView);
+  });
+
   // Entry screen
   els.enterNodeBtn.addEventListener("click", enterNode);
   els.entryGroupId.addEventListener("keydown", e => { if (e.key === "Enter") els.entryPassphrase.focus(); });
   els.entryPassphrase.addEventListener("keydown", e => { if (e.key === "Enter") enterNode(); });
+  els.entryBackBtn.addEventListener("click", showLanding);
 
-  // Check if already unlocked this session (skip entry screen)
+  // Check if already unlocked this session (skip landing + entry)
   if (sessionStorage.getItem("exposure.unlocked")) {
     showDashboard();
   }
@@ -173,24 +224,27 @@ function isDesktop() {
 }
 
 function switchTab(name) {
-  if (isDesktop()) {
-    // Desktop: both columns always visible; settings is a sliding panel
+  const desktop = isDesktop();
+  if (desktop) {
+    // Desktop: both content columns always visible
     els.tabSignal.classList.add("active");
     els.tabActivity.classList.add("active");
-    const openSettings = name === "settings";
-    els.tabSettings.classList.toggle("panel-open", openSettings);
-    els.settingsBackdrop.classList.toggle("visible", openSettings);
+    // Settings and Profile are sliding panels; only one open at a time
+    els.tabSettings.classList.toggle("panel-open", name === "settings");
+    els.tabProfile.classList.toggle("panel-open", name === "profile");
+    els.settingsBackdrop.classList.toggle("visible", name === "settings" || name === "profile");
   } else {
-    // Mobile: show only the active tab
-    ["activity", "signal", "settings"].forEach(tab => {
+    // Mobile: show only the active tab panel
+    ["activity", "signal", "settings", "profile"].forEach(tab => {
       document.getElementById(`tab-${tab}`).classList.toggle("active", tab === name);
-      document.getElementById(`nav${tab.charAt(0).toUpperCase() + tab.slice(1)}`).classList.toggle("active", tab === name);
+      const btn = document.getElementById(`nav${tab.charAt(0).toUpperCase() + tab.slice(1)}`);
+      if (btn) btn.classList.toggle("active", tab === name);
     });
-    // Ensure settings panel overlay is closed on mobile
     els.tabSettings.classList.remove("panel-open");
+    els.tabProfile.classList.remove("panel-open");
     els.settingsBackdrop.classList.remove("visible");
   }
-  if (name !== "settings") sessionStorage.setItem("exposure.activeTab", name);
+  if (name !== "settings" && name !== "profile") sessionStorage.setItem("exposure.activeTab", name);
 }
 
 function enterNode() {
@@ -207,7 +261,18 @@ function enterNode() {
   showDashboard();
 }
 
+function showLanding() {
+  els.entryView.classList.add("hidden");
+  els.landingView.classList.remove("hidden");
+}
+
+function showEntryView() {
+  els.landingView.classList.add("hidden");
+  els.entryView.classList.remove("hidden");
+}
+
 function showDashboard() {
+  els.landingView.classList.add("hidden");
   els.entryView.classList.add("hidden");
   els.dashboard.classList.remove("hidden");
   switchTab(isDesktop() ? "signal" : (sessionStorage.getItem("exposure.activeTab") || "signal"));
@@ -222,7 +287,201 @@ function lockNode() {
   els.tabSettings.classList.remove("panel-open");
   els.settingsBackdrop.classList.remove("visible");
   els.dashboard.classList.add("hidden");
-  els.entryView.classList.remove("hidden");
+  showLanding();
+}
+
+// ── Avatar ──
+
+function getAvatarColorIdx() {
+  return parseInt(localStorage.getItem("exposure.avatarColor") || "0", 10) % AVATAR_COLORS.length;
+}
+
+function initAvatarPicker() {
+  const idx = getAvatarColorIdx();
+
+  // Build color swatches
+  AVATAR_COLORS.forEach((color, i) => {
+    const swatch = document.createElement("button");
+    swatch.className = "color-swatch" + (i === idx ? " active" : "");
+    swatch.style.background = color.text;
+    swatch.setAttribute("aria-label", `Avatar color ${i + 1}`);
+    swatch.addEventListener("click", () => {
+      localStorage.setItem("exposure.avatarColor", String(i));
+      document.querySelectorAll(".color-swatch").forEach((s, j) => s.classList.toggle("active", j === i));
+      updateAvatarDisplay();
+    });
+    els.colorSwatches.appendChild(swatch);
+  });
+
+  updateAvatarDisplay();
+}
+
+function updateAvatarDisplay() {
+  const name = els.displayName.value.trim() || "?";
+  const text = initials(name);
+  const idx = getAvatarColorIdx();
+  const { bg, text: fg } = AVATAR_COLORS[idx];
+
+  // Topbar avatar button
+  els.desktopProfileBtn.textContent = text;
+  els.desktopProfileBtn.style.background = bg;
+  els.desktopProfileBtn.style.color = fg;
+
+  // Large preview in profile panel
+  els.avatarPreviewLarge.textContent = text;
+  els.avatarPreviewLarge.style.background = bg;
+  els.avatarPreviewLarge.style.color = fg;
+}
+
+// ── Scalable Capital CSV import ──
+
+let _pendingScalablePositions = null;
+
+function handleScalableFile(file) {
+  els.scalableImportStatus.className = "import-status hidden";
+  els.scalableImportStatus.innerHTML = "";
+  els.scalableImportActions.classList.add("hidden");
+  _pendingScalablePositions = null;
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const positions = parseScalableCSV(e.target.result);
+      _pendingScalablePositions = positions;
+
+      const previewRows = positions.slice(0, 8).map(p =>
+        `<div class="import-preview-row">
+          <span class="asset-name">${escapeHtml(p.asset)}</span>
+          <span class="asset-detail">${formatEditableNumber(p.quantity)} sh &middot; avg ${formatAmount(p.avgPrice)}</span>
+        </div>`
+      ).join("");
+      const more = positions.length > 8 ? `<div class="import-preview-row"><span class="asset-name muted">+${positions.length - 8} more</span></div>` : "";
+
+      els.scalableImportStatus.className = "import-status success";
+      els.scalableImportStatus.innerHTML = `
+        <strong>${positions.length} open position${positions.length === 1 ? "" : "s"} found</strong>
+        <div class="import-preview-list">${previewRows}${more}</div>
+      `;
+      els.scalableImportActions.classList.remove("hidden");
+    } catch (err) {
+      els.scalableImportStatus.className = "import-status error";
+      els.scalableImportStatus.textContent = err.message;
+    }
+  };
+  reader.readAsText(file, "utf-8");
+}
+
+// Parse European-format numbers: "1.045,92" → 1045.92, "64,92" → 64.92
+function parseEuropeanNumber(str) {
+  if (!str) return NaN;
+  return parseFloat(String(str).trim().replace(/\./g, "").replace(",", "."));
+}
+
+function parseScalableCSV(text) {
+  // Strip BOM if present
+  const raw = text.replace(/^﻿/, "");
+  const lines = raw.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) throw new Error("File appears empty.");
+
+  const split = line => line.split(";").map(c => c.trim().replace(/^"|"$/g, ""));
+  const header = split(lines[0]).map(h => h.toLowerCase());
+
+  const col = name => {
+    const i = header.indexOf(name);
+    if (i === -1) throw new Error(`Column "${name}" not found — is this a Scalable Capital all-transactions export?`);
+    return i;
+  };
+
+  const iDate   = col("date");
+  const iTime   = col("time");
+  const iStatus = col("status");
+  const iDesc   = col("description");
+  const iType   = col("type");
+  const iISIN   = col("isin");
+  const iShares = col("shares");
+  const iPrice  = col("price");
+
+  // Collect valid executed trades into an array first
+  const trades = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = split(lines[i]);
+    if (cells[iStatus]?.toLowerCase() !== "executed") continue;
+
+    const type = cells[iType]?.toLowerCase();
+    if (type !== "buy" && type !== "sell") continue;
+
+    const isin   = cells[iISIN]?.trim();
+    const name   = cells[iDesc]?.trim();
+    const date   = cells[iDate]?.trim();
+    const time   = cells[iTime]?.trim() || "00:00:00";
+    const shares = parseEuropeanNumber(cells[iShares]);
+    const price  = parseEuropeanNumber(cells[iPrice]);
+
+    if (!isin || !name || !(shares > 0) || isNaN(price) || price < 0) continue;
+
+    trades.push({ datetime: `${date}T${time}`, isin, name, type, shares, price });
+  }
+
+  if (!trades.length) throw new Error("No executed trades found in this file.");
+
+  // Sort oldest → newest by full datetime (date + time).
+  // The CSV is newest-first, so date-only sorting leaves same-day pairs in wrong
+  // order: sell before buy → sell clamps to 0, then buy re-adds it (Walmart bug).
+  trades.sort((a, b) => a.datetime.localeCompare(b.datetime));
+
+  // Replay trades grouped by ISIN (unique per security regardless of name changes)
+  // Track the most recent name for each ISIN (last seen after sorting = most recent)
+  const positions = new Map(); // isin → { name, quantity, avgPrice }
+
+  for (const { datetime: _dt, isin, name, type, shares, price } of trades) {
+    if (!positions.has(isin)) positions.set(isin, { name, quantity: 0, avgPrice: 0 });
+    const pos = positions.get(isin);
+    pos.name = name; // keep updating so we end up with the most recent name
+
+    if (type === "buy") {
+      const newQty = pos.quantity + shares;
+      pos.avgPrice = newQty > 0
+        ? (pos.quantity * pos.avgPrice + shares * price) / newQty
+        : price;
+      pos.quantity = newQty;
+    } else {
+      // Sell: reduce quantity, keep weighted average cost basis
+      pos.quantity = Math.max(0, pos.quantity - shares);
+    }
+  }
+
+  const result = [...positions.values()]
+    .filter(p => p.quantity > 0.0001)
+    .map(p => ({
+      asset: p.name,
+      quantity: Math.round(p.quantity * 10000) / 10000,
+      avgPrice: Math.round(p.avgPrice * 100) / 100,
+      markPrice: Math.round(p.avgPrice * 100) / 100,
+      updatedAt: new Date().toISOString(),
+    }))
+    .sort((a, b) => a.asset.localeCompare(b.asset));
+
+  if (!result.length) throw new Error("No open positions found — all positions appear fully sold.");
+  return result;
+}
+
+function confirmScalableImport(mode) {
+  if (!_pendingScalablePositions?.length) return;
+
+  const next = mode === "replace"
+    ? _pendingScalablePositions
+    : mergeImportedPositions(storage.positions, _pendingScalablePositions);
+
+  storage.positions = sortPositions(next);
+  _pendingScalablePositions = null;
+  els.scalableImportActions.classList.add("hidden");
+  els.scalableImportStatus.className = "import-status success";
+  els.scalableImportStatus.textContent = mode === "replace"
+    ? "Portfolio replaced from Scalable Capital export."
+    : "Positions merged into local portfolio.";
+
+  renderPortfolio();
+  toast(mode === "replace" ? "Portfolio replaced." : "Import merged.");
 }
 
 function updateNodeLink() {
@@ -463,6 +722,8 @@ function renderPortfolio() {
     els.portfolioSummary.textContent = `${positions.length} holding${positions.length === 1 ? "" : "s"} tracked locally. Prices stay on this device.`;
   }
 
+  renderPortfolioChart();
+
   els.positions.innerHTML = positions.map((position) => {
     const exposure = exposures.get(position.asset) || 0;
     const markPx = effectiveMarkPrice(position);
@@ -522,6 +783,7 @@ function renderPortfolio() {
 function renderFeed() {
   const signals = storage.signals;
   els.feed.innerHTML = "";
+  renderMemberSnapshots();
 
   if (!signals.length) {
     els.feed.innerHTML = `<div class="feed-empty">No percentage signals yet. Apply a local move first.</div>`;
@@ -699,6 +961,140 @@ async function exportFeed() {
   });
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ── Chart colours (dark-background optimised) ──
+const ASSET_COLORS = [
+  "#00e290", "#60a5fa", "#a78bfa", "#fb923c",
+  "#facc15", "#f87171", "#34d399", "#22d3ee",
+  "#e879f9", "#a3e635",
+];
+
+function createDonutSvg(segments, size = 80) {
+  const cx = size / 2, cy = size / 2;
+  const R = size * 0.44, r = size * 0.26;
+  const total = segments.reduce((s, seg) => s + seg.value, 0);
+  if (!total || !segments.length) {
+    return `<svg viewBox="0 0 ${size} ${size}"><circle cx="${cx}" cy="${cy}" r="${(R+r)/2}" fill="none" stroke="var(--border)" stroke-width="${R-r}"/></svg>`;
+  }
+
+  const gap = segments.length > 1 ? 0.04 : 0;
+  let angle = -Math.PI / 2;
+
+  const paths = segments.map((seg, i) => {
+    const fraction = seg.value / total;
+    const sweep = Math.max(fraction * Math.PI * 2 - gap, 0.001);
+    const a1 = angle + gap / 2;
+    const a2 = a1 + sweep;
+    angle += fraction * Math.PI * 2;
+
+    if (fraction >= 0.999) {
+      const mid = a1 + Math.PI;
+      const f = (a) => [cx + R * Math.cos(a), cy + R * Math.sin(a)];
+      const fi = (a) => [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+      const [ox1, oy1] = f(a1), [ox2, oy2] = f(mid), [ox3, oy3] = f(a2);
+      const [ix1, iy1] = fi(a2), [ix2, iy2] = fi(mid), [ix3, iy3] = fi(a1);
+      return `<path d="M${ox1} ${oy1} A${R} ${R} 0 0 1 ${ox2} ${oy2} A${R} ${R} 0 0 1 ${ox3} ${oy3} L${ix1} ${iy1} A${r} ${r} 0 0 0 ${ix2} ${iy2} A${r} ${r} 0 0 0 ${ix3} ${iy3}Z" fill="${seg.color}"/>`;
+    }
+
+    const largeArc = sweep > Math.PI ? 1 : 0;
+    const p = (x) => x.toFixed(2);
+    const x1 = cx + R * Math.cos(a1), y1 = cy + R * Math.sin(a1);
+    const x2 = cx + R * Math.cos(a2), y2 = cy + R * Math.sin(a2);
+    const ix1 = cx + r * Math.cos(a2), iy1 = cy + r * Math.sin(a2);
+    const ix2 = cx + r * Math.cos(a1), iy2 = cy + r * Math.sin(a1);
+    return `<path d="M${p(x1)} ${p(y1)} A${R} ${R} 0 ${largeArc} 1 ${p(x2)} ${p(y2)} L${p(ix1)} ${p(iy1)} A${r} ${r} 0 ${largeArc} 0 ${p(ix2)} ${p(iy2)}Z" fill="${seg.color}"/>`;
+  });
+
+  return `<svg viewBox="0 0 ${size} ${size}" xmlns="http://www.w3.org/2000/svg">${paths.join("")}</svg>`;
+}
+
+function renderPortfolioChart() {
+  const positions = storage.positions;
+  const chart = document.getElementById("portfolioChart");
+  const exposures = computeExposureMap(positions);
+
+  const segments = [...exposures.entries()]
+    .filter(([, pct]) => pct > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([asset, pct], i) => ({ label: asset, value: pct, color: ASSET_COLORS[i % ASSET_COLORS.length] }));
+
+  if (!segments.length) { chart.classList.add("hidden"); return; }
+
+  chart.classList.remove("hidden");
+  const legendHtml = segments.map(s => `
+    <div class="legend-item">
+      <div class="legend-dot" style="background:${s.color}"></div>
+      <span class="legend-label">${escapeHtml(s.label)}</span>
+      <span class="legend-pct">${formatExposure(s.value)}</span>
+    </div>`).join("");
+
+  chart.innerHTML = `
+    <div class="chart-svg-wrap">${createDonutSvg(segments, 80)}</div>
+    <div class="chart-legend">${legendHtml}</div>
+  `;
+}
+
+function deriveMemberPositions(signals) {
+  const sorted = [...signals].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  const state = new Map();
+  for (const signal of sorted) {
+    if (!state.has(signal.author)) state.set(signal.author, { positions: new Map(), lastActive: null });
+    const m = state.get(signal.author);
+    m.lastActive = signal.createdAt;
+    if (signal.newExposure === 0) m.positions.delete(signal.asset);
+    else m.positions.set(signal.asset, signal.newExposure);
+  }
+  return state;
+}
+
+function renderMemberSnapshots() {
+  const container = document.getElementById("memberSnapshots");
+  const signals = storage.signals;
+
+  if (!signals.length) { container.innerHTML = ""; return; }
+
+  const memberState = deriveMemberPositions(signals);
+  const active = [...memberState.entries()].filter(([, { positions }]) => positions.size > 0);
+  if (!active.length) { container.innerHTML = ""; return; }
+
+  // Assign consistent colours across all members by asset name
+  const allAssets = new Set(active.flatMap(([, { positions }]) => [...positions.keys()]));
+  const colorMap = new Map([...allAssets].sort().map((asset, i) => [asset, ASSET_COLORS[i % ASSET_COLORS.length]]));
+
+  const cards = active.map(([author, { positions }]) => {
+    const sorted = [...positions.entries()].sort((a, b) => b[1] - a[1]);
+    const segments = sorted.map(([asset, pct]) => ({ label: asset, value: pct, color: colorMap.get(asset) }));
+    const top = sorted.slice(0, 4);
+    const more = sorted.length - top.length;
+
+    const legendHtml = [
+      ...top.map(([asset, pct]) => `
+        <div class="legend-item">
+          <div class="legend-dot" style="background:${colorMap.get(asset)}"></div>
+          <span class="legend-label">${escapeHtml(asset)}</span>
+          <span class="legend-pct">${Number(pct).toFixed(1)}%</span>
+        </div>`),
+      more > 0 ? `<div class="legend-item"><span class="legend-label muted">+${more} more</span></div>` : "",
+    ].join("");
+
+    return `
+      <div class="snapshot-card">
+        <div class="snapshot-author">
+          <div class="snapshot-avatar">${escapeHtml(initials(author))}</div>
+          <span class="snapshot-name">${escapeHtml(author)}</span>
+        </div>
+        <div class="snapshot-body">
+          <div class="snapshot-chart">${createDonutSvg(segments, 60)}</div>
+          <div class="snapshot-legend">${legendHtml}</div>
+        </div>
+      </div>`;
+  }).join("");
+
+  container.innerHTML = `
+    <div class="snapshots-label">Member Allocations</div>
+    <div class="snapshots-grid">${cards}</div>
+  `;
 }
 
 function computeExposureMap(positions) {
