@@ -1,4 +1,4 @@
-your-domain.com {
+exposure.timurjamestanurhan.com {
   encode gzip zstd
   reverse_proxy exposure:3000
 }

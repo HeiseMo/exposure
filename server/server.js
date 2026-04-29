@@ -72,6 +72,7 @@ app.use(express.static(publicDir, {
   extensions: ["html"],
   setHeaders(res) {
     res.setHeader("Cache-Control", "public, max-age=300");
+    res.setHeader("Service-Worker-Allowed", "/");
   },
 }));
 

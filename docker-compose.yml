@@ -9,8 +9,12 @@ services:
       - MAX_EVENTS_PER_GROUP=5000
     volumes:
       - exposure-data:/data
-    ports:
-      - "3000:3000"
+    networks:
+      - web
 
 volumes:
   exposure-data:
+
+networks:
+  web:
+    external: true
