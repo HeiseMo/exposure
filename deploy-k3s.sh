@@ -1,7 +1,16 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_PATH=$0
+while [ -L "$SCRIPT_PATH" ]; do
+  LINK_TARGET=$(readlink "$SCRIPT_PATH")
+  case "$LINK_TARGET" in
+    /*) SCRIPT_PATH=$LINK_TARGET ;;
+    *) SCRIPT_PATH=$(dirname -- "$SCRIPT_PATH")/$LINK_TARGET ;;
+  esac
+done
+
+REPO_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
 IMAGE_NAME="exposure-exposure:latest"
 IMAGE_TAR="/tmp/exposure-exposure.tar"
 NAMESPACE="exposure"
