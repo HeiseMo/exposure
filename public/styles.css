@@ -2076,3 +2076,18 @@ button .material-symbols-outlined { font-size: 17px; }
 @media (max-width: 360px) {
   .position-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Circle owner chip ── */
+.owner-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.7rem;
+  background: rgba(0,226,144,0.08);
+  border: 1px solid rgba(0,226,144,0.3);
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}

@@ -8,6 +8,8 @@ The app is a PWA for a small friend group. Users post things like:
 
 The VPS stores encrypted event blobs only. Decryption happens in the browser with the shared group passphrase.
 
+The server now persists circles in SQLite. Encrypted events remain append-only, and circle settings/metadata are stored separately.
+
 ## What is private?
 
 - Absolute money amounts are never requested.
@@ -68,6 +70,49 @@ http://YOUR_VPS_IP:3000
 
 For iOS/Android PWA installability and microphone permission, use HTTPS.
 
+## Server model
+
+- Event sync is stored in SQLite at `/data/exposure.sqlite` by default.
+- Existing legacy JSON group files are imported automatically on server startup.
+- Circle metadata is a first-class server record separate from encrypted event history.
+- Circle settings are a dedicated server resource, separate from append-only events.
+- The first device to join can claim the circle and receives an owner token for protected settings updates.
+
+### Settings: circle-level vs device-local
+
+**Circle-level settings** are owner-controlled and affect all members equally:
+
+| Setting         | Values                          | Effect |
+|-----------------|---------------------------------|--------|
+| `name`          | string, max 60 chars            | Display name for the circle |
+| `postingPolicy` | `any-member` \| `owner-only`   | Who may post encrypted events to the server |
+
+When `postingPolicy` is `owner-only`, the server rejects `POST /events` requests that do not carry a valid owner token. Non-owner members can still read and decrypt the feed.
+
+**Device-local settings** are personal ergonomics that belong to the individual device only:
+
+- Display name and avatar colour
+- Rounding precision (viewing preference, not circle governance)
+- Local portfolio positions and prices
+- Passphrase and session unlock state
+- Sort order, collapsed form state, and other UI preferences
+
+The guiding rule: if a setting changes what all members see or are allowed to do, it belongs to the circle (server-side, owner-controlled). If it only changes one person's device experience, it stays local.
+
+### Circle API
+
+```text
+GET  /api/groups/:groupId
+GET  /api/groups/:groupId/events
+POST /api/groups/:groupId/events        # 403 if postingPolicy=owner-only and no valid token
+POST /api/groups/:groupId/owner/claim
+GET  /api/groups/:groupId/settings
+PUT  /api/groups/:groupId/settings      # requires x-circle-owner-token
+GET  /api/groups/:groupId/settings/history  # requires x-circle-owner-token
+```
+
+`PUT /settings` validates the payload against the canonical schema and rejects unknown keys.
+
 ## Caddy production example
 
 Create a Docker network:
@@ -121,4 +166,3 @@ And set your Exposure service to the same `web` network.
 - Better natural-language parsing.
 - Reactions/comments.
 - User-level keypairs instead of one shared passphrase.
-- Replace JSON file storage with SQLite if the group grows.

@@ -1,17 +1,26 @@
 import express from "express";
 import helmet from "helmet";
 import morgan from "morgan";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+
+import { createStore, validateSettings } from "./store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const publicDir = path.join(root, "public");
 const dataDir = process.env.DATA_DIR || path.join(__dirname, "data");
+const dbPath = process.env.SQLITE_PATH || path.join(dataDir, "exposure.sqlite");
 const port = Number(process.env.PORT || 3000);
 const maxEventsPerGroup = Number(process.env.MAX_EVENTS_PER_GROUP || 5000);
+
+const store = await createStore({
+  dataDir,
+  dbPath,
+  maxEventsPerGroup,
+  normalizeGroup,
+});
 
 const app = express();
 
@@ -34,32 +43,89 @@ app.use(express.json({ limit: "256kb" }));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
-app.get("/api/groups/:groupId/events", async (req, res) => {
+app.get("/api/groups/:groupId", (req, res) => {
   const groupId = normalizeGroup(req.params.groupId);
-  const events = await readGroup(groupId);
-  res.json({ events });
+  res.json({ metadata: store.getCircleMetadata(groupId) });
 });
 
-app.post("/api/groups/:groupId/events", async (req, res) => {
+app.get("/api/groups/:groupId/events", (req, res) => {
+  const groupId = normalizeGroup(req.params.groupId);
+  res.json({ events: store.listEvents(groupId), metadata: store.getCircleMetadata(groupId) });
+});
+
+app.post("/api/groups/:groupId/events", (req, res) => {
   const groupId = normalizeGroup(req.params.groupId);
   const { id, blob } = req.body || {};
 
   if (!isUuidLike(id)) return res.status(400).json({ error: "Invalid id" });
   if (!isEncryptedBlob(blob)) return res.status(400).json({ error: "Invalid encrypted blob" });
 
-  const events = await readGroup(groupId);
-  if (!events.some(event => event.id === id)) {
-    events.push({
-      id,
-      blob,
-      receivedAt: new Date().toISOString(),
-      serverId: crypto.randomUUID(),
-    });
+  const policy = store.getCirclePostingPolicy(groupId);
+  if (policy === "owner-only") {
+    const ownerToken = readOwnerToken(req);
+    if (!ownerToken || !store.verifyOwner(groupId, hashOwnerToken(ownerToken))) {
+      return res.status(403).json({ error: "This circle is owner-only. Only the owner may post events." });
+    }
   }
 
-  const trimmed = events.slice(-maxEventsPerGroup);
-  await writeGroup(groupId, trimmed);
-  res.status(201).json({ ok: true });
+  store.appendEvent(groupId, { id, blob });
+  res.status(201).json({ ok: true, metadata: store.getCircleMetadata(groupId) });
+});
+
+app.post("/api/groups/:groupId/owner/claim", (req, res) => {
+  const groupId = normalizeGroup(req.params.groupId);
+  const existing = store.getCircleMetadata(groupId);
+  if (existing.hasOwner) {
+    return res.status(409).json({ error: "Circle owner already claimed." });
+  }
+
+  const ownerToken = crypto.randomBytes(24).toString("base64url");
+  const claimed = store.claimOwner(groupId, hashOwnerToken(ownerToken));
+  if (!claimed) {
+    return res.status(409).json({ error: "Circle owner already claimed." });
+  }
+
+  res.status(201).json({
+    ownerToken,
+    metadata: store.getCircleMetadata(groupId),
+  });
+});
+
+app.get("/api/groups/:groupId/settings", (req, res) => {
+  const groupId = normalizeGroup(req.params.groupId);
+  res.json(store.getSettings(groupId));
+});
+
+app.put("/api/groups/:groupId/settings", (req, res) => {
+  const groupId = normalizeGroup(req.params.groupId);
+  const ownerToken = readOwnerToken(req);
+  if (!ownerToken) return res.status(401).json({ error: "Missing circle owner token." });
+  if (!store.verifyOwner(groupId, hashOwnerToken(ownerToken))) {
+    return res.status(403).json({ error: "Invalid circle owner token." });
+  }
+
+  const { settings, reason } = req.body || {};
+  const validation = validateSettings(settings);
+  if (!validation.valid) {
+    return res.status(400).json({ error: validation.error });
+  }
+
+  const actorLabel = `owner:${hashOwnerToken(ownerToken).slice(0, 12)}`;
+  res.json(store.updateSettings(groupId, validation.normalized, actorLabel, sanitizeReason(reason)));
+});
+
+app.get("/api/groups/:groupId/settings/history", (req, res) => {
+  const groupId = normalizeGroup(req.params.groupId);
+  const ownerToken = readOwnerToken(req);
+  if (!ownerToken) return res.status(401).json({ error: "Missing circle owner token." });
+  if (!store.verifyOwner(groupId, hashOwnerToken(ownerToken))) {
+    return res.status(403).json({ error: "Invalid circle owner token." });
+  }
+
+  res.json({
+    history: store.listSettingsAudit(groupId),
+    metadata: store.getCircleMetadata(groupId),
+  });
 });
 
 app.get("/node/:groupId", (_req, res) => {
@@ -80,37 +146,15 @@ app.get("*", (_req, res) => {
   res.sendFile(path.join(publicDir, "index.html"));
 });
 
-await fs.mkdir(dataDir, { recursive: true });
-
 app.listen(port, () => {
   console.log(`Exposure running on http://localhost:${port}`);
+  console.log(`SQLite store: ${dbPath}`);
 });
 
 function normalizeGroup(value) {
   const groupId = String(value || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
   if (!groupId) throw Object.assign(new Error("Invalid group"), { status: 400 });
   return groupId.slice(0, 80);
-}
-
-function groupPath(groupId) {
-  return path.join(dataDir, `${groupId}.json`);
-}
-
-async function readGroup(groupId) {
-  try {
-    const raw = await fs.readFile(groupPath(groupId), "utf8");
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed.events) ? parsed.events : [];
-  } catch (error) {
-    if (error.code === "ENOENT") return [];
-    throw error;
-  }
-}
-
-async function writeGroup(groupId, events) {
-  const tmp = `${groupPath(groupId)}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify({ groupId, events }, null, 2));
-  await fs.rename(tmp, groupPath(groupId));
 }
 
 function isUuidLike(value) {
@@ -127,4 +171,17 @@ function isEncryptedBlob(blob) {
     blob.salt.length < 200 &&
     blob.iv.length < 200 &&
     blob.data.length < 50000;
+}
+
+function hashOwnerToken(ownerToken) {
+  return crypto.createHash("sha256").update(ownerToken).digest("hex");
+}
+
+function readOwnerToken(req) {
+  return req.get("x-circle-owner-token") || "";
+}
+
+function sanitizeReason(reason) {
+  if (typeof reason !== "string") return "";
+  return reason.trim().slice(0, 200);
 }

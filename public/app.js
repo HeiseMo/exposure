@@ -91,6 +91,13 @@ const els = {
   scalableReplaceBtn: $("scalableReplaceBtn"),
   scalableMergeBtn: $("scalableMergeBtn"),
   copyNodeLinkBtn: $("copyNodeLinkBtn"),
+  circleAdminCard: $("circleAdminCard"),
+  circleOwnerChip: $("circleOwnerChip"),
+  claimOwnerBtn: $("claimOwnerBtn"),
+  circleOwnerSection: $("circleOwnerSection"),
+  circleNameInput: $("circleNameInput"),
+  postingPolicySelect: $("postingPolicySelect"),
+  saveCircleSettingsBtn: $("saveCircleSettingsBtn"),
 };
 
 const storage = {
@@ -125,6 +132,14 @@ const storage = {
   },
   set lastSyncedAt(value) {
     const key = scopedStorageKey("exposure.lastSyncedAt");
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  },
+  get ownerToken() {
+    return localStorage.getItem(scopedStorageKey("exposure.ownerToken")) || "";
+  },
+  set ownerToken(value) {
+    const key = scopedStorageKey("exposure.ownerToken");
     if (value) localStorage.setItem(key, value);
     else localStorage.removeItem(key);
   },
@@ -242,6 +257,10 @@ function boot() {
   els.closeSettingsBtn.addEventListener("click", () => switchTab("signal"));
   els.closeProfileBtn.addEventListener("click", () => switchTab("signal"));
   els.settingsBackdrop.addEventListener("click", () => switchTab("signal"));
+
+  // Circle admin
+  if (els.claimOwnerBtn) els.claimOwnerBtn.addEventListener("click", claimCircleOwnership);
+  if (els.saveCircleSettingsBtn) els.saveCircleSettingsBtn.addEventListener("click", saveCircleSettings);
 
   // Lock button (mobile settings tab) + topbar lock icon
   els.lockNodeBtn.addEventListener("click", lockNode);
@@ -393,6 +412,7 @@ function showDashboard() {
   syncNodeIdentityState();
   syncTradeFormState();
   switchTab(isDesktop() ? "signal" : (sessionStorage.getItem("exposure.activeTab") || "signal"));
+  refreshCircleState();
 }
 
 function lockNode() {
@@ -1332,6 +1352,108 @@ function setSyncBusyState(isBusy) {
   if (!isBusy) syncEnvironmentState();
 }
 
+async function refreshCircleState() {
+  if (location.protocol === "file:" || !sessionStorage.getItem("exposure.unlocked")) return;
+  const groupId = getActiveGroupId();
+  if (!groupId) return;
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}`);
+    if (!res.ok) return;
+    const { metadata } = await res.json();
+
+    let isVerifiedOwner = false;
+    if (storage.ownerToken) {
+      const verification = await verifyOwnerToken(groupId, storage.ownerToken);
+      if (verification === "invalid") storage.ownerToken = "";
+      isVerifiedOwner = verification === "valid";
+    }
+
+    syncCircleAdminState(metadata, isVerifiedOwner);
+  } catch {}
+}
+
+async function verifyOwnerToken(groupId, ownerToken) {
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/settings/history`, {
+      headers: { "x-circle-owner-token": ownerToken },
+    });
+    if (res.ok) return "valid";
+    if (res.status === 401 || res.status === 403) return "invalid";
+    return "unknown";
+  } catch {
+    // Network failure — do not treat as rejection
+    return "unknown";
+  }
+}
+
+function syncCircleAdminState(metadata, isVerifiedOwner = false) {
+  const isUnlocked = sessionStorage.getItem("exposure.unlocked") === "1";
+  if (!els.circleAdminCard) return;
+
+  els.circleAdminCard.classList.toggle("hidden", !isUnlocked);
+  if (!isUnlocked) return;
+
+  els.circleOwnerChip.classList.toggle("hidden", !isVerifiedOwner);
+  els.claimOwnerBtn.classList.toggle("hidden", metadata.hasOwner || Boolean(storage.ownerToken));
+  els.circleOwnerSection.classList.toggle("hidden", !isVerifiedOwner);
+
+  if (isVerifiedOwner) loadCircleSettings();
+}
+
+async function loadCircleSettings() {
+  const groupId = getActiveGroupId();
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/settings`);
+    if (res.ok) {
+      const { settings } = await res.json();
+      if (els.circleNameInput) els.circleNameInput.value = settings?.name || "";
+      if (els.postingPolicySelect) els.postingPolicySelect.value = settings?.postingPolicy || "any-member";
+    }
+  } catch {}
+}
+
+async function claimCircleOwnership() {
+  const groupId = getActiveGroupId();
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/owner/claim`, {
+      method: "POST",
+    });
+    if (res.status === 201) {
+      const { ownerToken, metadata } = await res.json();
+      storage.ownerToken = ownerToken;
+      toast("You are now circle owner on this device.");
+      syncCircleAdminState(metadata, true);
+    } else if (res.status === 409) {
+      toast("Circle ownership already claimed by another device.");
+      refreshCircleState();
+    } else {
+      toast("Failed to claim ownership.");
+    }
+  } catch {
+    toast("Claim failed. Check your connection.");
+  }
+}
+
+async function saveCircleSettings() {
+  const groupId = getActiveGroupId();
+  const ownerToken = storage.ownerToken;
+  if (!ownerToken) return toast("No owner token on this device.");
+  const name = (els.circleNameInput?.value || "").trim().slice(0, 60);
+  const postingPolicy = els.postingPolicySelect?.value || "any-member";
+  try {
+    const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "x-circle-owner-token": ownerToken },
+      body: JSON.stringify({ settings: { name, postingPolicy }, reason: "Updated from settings panel" }),
+    });
+    if (res.ok) toast("Circle settings saved.");
+    else if (res.status === 403) toast("Owner token rejected — may have changed.");
+    else toast("Failed to save settings.");
+  } catch {
+    toast("Save failed. Check your connection.");
+  }
+}
+
 async function syncFeed() {
   const syncBlockMessage = getSyncBlockMessage();
   if (syncBlockMessage) {
@@ -1354,11 +1476,15 @@ async function syncFeed() {
     for (const signal of signals) {
       if (remoteIds.has(signal.id)) continue;
       const encrypted = await encryptJson(signal, passphrase, groupId);
+      const ownerToken = storage.ownerToken;
+      const postHeaders = { "Content-Type": "application/json" };
+      if (ownerToken) postHeaders["x-circle-owner-token"] = ownerToken;
       const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/events`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: postHeaders,
         body: JSON.stringify({ id: signal.id, blob: encrypted }),
       });
+      if (res.status === 403) return toast("This circle is owner-only. Only the owner can post signals.");
       if (!res.ok) return toast("Upload failed.");
       remoteIds.add(signal.id);
     }
@@ -1386,6 +1512,7 @@ async function syncFeed() {
     renderFeed();
     updateLastSyncedLabel();
     toast("Synced encrypted percentage feed.");
+    refreshCircleState();
   } catch (error) {
     console.warn("Sync failed", error);
     toast("Sync failed. Check that you opened the app from the server URL and that the server is reachable.");

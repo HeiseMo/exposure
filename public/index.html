@@ -407,6 +407,38 @@
         </div>
       </div>
 
+      <!-- Circle admin -->
+      <div class="card hidden" id="circleAdminCard">
+        <div class="field-label-caps">Circle admin</div>
+        <div class="space-y" style="margin-top:0.45rem;">
+          <div id="circleOwnerChip" class="owner-chip hidden">
+            <span class="material-symbols-outlined" style="font-size:1rem;vertical-align:-2px;">verified</span>
+            Circle owner on this device
+          </div>
+          <button id="claimOwnerBtn" class="secondary hidden" style="font-size:0.82rem;">
+            <span class="material-symbols-outlined">shield_person</span>
+            Claim circle ownership
+          </button>
+          <div id="circleOwnerSection" class="hidden space-y">
+            <div>
+              <label for="circleNameInput">Circle display name</label>
+              <input id="circleNameInput" placeholder="e.g. Fund Alpha" maxlength="60" />
+            </div>
+            <div>
+              <label for="postingPolicySelect">Posting policy</label>
+              <select id="postingPolicySelect">
+                <option value="any-member">Any member can post</option>
+                <option value="owner-only">Owner only</option>
+              </select>
+            </div>
+            <button id="saveCircleSettingsBtn" class="secondary" style="font-size:0.82rem;">
+              <span class="material-symbols-outlined">save</span>
+              Save circle settings
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Data management -->
       <div class="card">
         <div class="field-label-caps">Data management</div>
