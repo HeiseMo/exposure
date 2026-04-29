@@ -12,6 +12,7 @@ const AVATAR_COLORS = [
 const DEFAULT_POSITION_SORT = { key: "allocation", direction: "desc" };
 const LEGACY_STORAGE_MIGRATION_KEY = "exposure.storage.scoped.migrated";
 const DEFAULT_LM_STUDIO_URL = "http://localhost:1234";
+const IS_LOCALHOST = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
 
 let selectedMemberName = "";
 
@@ -296,9 +297,21 @@ function boot() {
 
   setupInstallPrompt();
 
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js");
-  }
+    if ("serviceWorker" in navigator) {
+      if (IS_LOCALHOST) {
+        navigator.serviceWorker.getRegistrations()
+          .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+          .catch(() => {});
+
+        if (window.caches) {
+          caches.keys()
+            .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+            .catch(() => {});
+        }
+      } else {
+        navigator.serviceWorker.register("./sw.js");
+      }
+    }
 }
 
 function isDesktop() {

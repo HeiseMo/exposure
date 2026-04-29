@@ -14,9 +14,24 @@ let currentReports = [];
 const FINANCIALS_RETRYABLE_STATUSES = new Set([404, 425, 503, 504]);
 const FINANCIALS_NOT_FOUND_STATUS = 422;
 const DEFAULT_GROUP_ID = "friends";
+const IS_LOCALHOST = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
 
 function getElement(id) {
   return document.getElementById(id);
+}
+
+function disableLocalServiceWorker() {
+  if (!("serviceWorker" in navigator) || !IS_LOCALHOST) return;
+
+  navigator.serviceWorker.getRegistrations()
+    .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+    .catch(() => {});
+
+  if (window.caches) {
+    caches.keys()
+      .then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
+      .catch(() => {});
+  }
 }
 
 function normalizeGroup(value) {
@@ -469,6 +484,7 @@ getElement("generateBtn").addEventListener("click", generateReport);
 getElement("retrySecBtn").addEventListener("click", retrySecFetch);
 
 syncActionButtons({ hasFinancials: false, isLoading: false });
+disableLocalServiceWorker();
 
 loadCompanyPage().catch(() => {
   showToast("Failed to load company data.");

@@ -27,6 +27,7 @@ const port = Number(process.env.PORT || 3000);
 const maxEventsPerGroup = Number(process.env.MAX_EVENTS_PER_GROUP || 5000);
 const DEFAULT_LM_STUDIO_URL = process.env.LM_STUDIO_URL || "http://localhost:1234";
 const DEFAULT_LM_STUDIO_MODEL = process.env.LM_STUDIO_MODEL || "local-model";
+const LM_STUDIO_GENERATE_TIMEOUT_MS = Number(process.env.LM_STUDIO_GENERATE_TIMEOUT_MS || 600_000);
 
 const store = await createStore({
   dataDir,
@@ -270,7 +271,9 @@ app.post("/api/companies/:ticker/reports/generate", async (req, res) => {
         temperature: 0.3,
         max_tokens: 8192,
       }),
-      signal: AbortSignal.timeout(120_000),
+      signal: Number.isFinite(LM_STUDIO_GENERATE_TIMEOUT_MS) && LM_STUDIO_GENERATE_TIMEOUT_MS > 0
+        ? AbortSignal.timeout(LM_STUDIO_GENERATE_TIMEOUT_MS)
+        : undefined,
     });
 
     if (!llmRes.ok) {
@@ -299,7 +302,10 @@ app.post("/api/companies/:ticker/reports/generate", async (req, res) => {
 
     res.status(201).json({ report, ticker });
   } catch (err) {
-    if (err.name === "TimeoutError") return res.status(504).json({ error: "LM Studio timed out after 120s" });
+    if (err.name === "TimeoutError") {
+      const timeoutSeconds = Math.round(LM_STUDIO_GENERATE_TIMEOUT_MS / 1000);
+      return res.status(504).json({ error: `LM Studio timed out after ${timeoutSeconds}s` });
+    }
     res.status(503).json({ error: "Could not reach LM Studio", detail: err.message });
   }
 });
