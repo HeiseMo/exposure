@@ -25,6 +25,7 @@ app.use(helmet({
       imgSrc: ["'self'", "data:"],
       connectSrc: ["'self'"],
       manifestSrc: ["'self'"],
+      upgradeInsecureRequests: null,
     },
   },
 }));
