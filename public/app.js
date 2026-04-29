@@ -1085,6 +1085,15 @@ function renderFeed() {
     else groups.earlier.push(signal);
   }
 
+  const renderSnapshotLinks = (snapshot = []) => {
+    return snapshot.slice(0, 3).map((entry) => {
+      const asset = typeof entry?.asset === "string" ? entry.asset : "";
+      const exposure = formatExposure(entry?.exposure);
+      if (!asset) return exposure;
+      return `<a href="/company/${encodeURIComponent(asset)}" class="ticker-link" title="View ${escapeHtml(asset)} company profile">${escapeHtml(asset)}</a> ${escapeHtml(exposure)}`;
+    }).join(" · ");
+  };
+
   const renderGroup = (label, list) => {
     if (!list.length) return "";
 
@@ -1100,14 +1109,14 @@ function renderFeed() {
       avatar.textContent = initials(signal.author);
       if (signal.kind === "import") {
         tickerBadge.textContent = "IMPORT";
-        const top = (signal.snapshot || []).slice(0, 3).map((entry) => `${entry.asset} ${formatExposure(entry.exposure)}`).join(" · ");
+        const top = renderSnapshotLinks(signal.snapshot || []);
         line.innerHTML = `<strong>${escapeHtml(signal.author)}</strong> imported a portfolio snapshot with <strong class="accent-dim">${escapeHtml(String(signal.meta?.holdingsCount || signal.snapshot?.length || 0))}</strong> holding${(signal.meta?.holdingsCount || signal.snapshot?.length || 0) === 1 ? "" : "s"}.`;
-        note.textContent = top ? `Visible positions: ${top}` : "No holdings shared yet.";
+        note.innerHTML = top ? `Visible positions: ${top}` : "No holdings shared yet.";
       } else if (signal.kind === "presence") {
         tickerBadge.textContent = "PRESENCE";
-        const top = (signal.snapshot || []).slice(0, 3).map((entry) => `${entry.asset} ${formatExposure(entry.exposure)}`).join(" · ");
+        const top = renderSnapshotLinks(signal.snapshot || []);
         line.innerHTML = `<strong>${escapeHtml(signal.author)}</strong> synced into the circle.`;
-        note.textContent = top ? `Current visible positions: ${top}` : "No holdings shared yet.";
+        note.innerHTML = top ? `Current visible positions: ${top}` : "No holdings shared yet.";
       } else {
         tickerBadge.innerHTML = `<a href="/company/${encodeURIComponent(signal.asset)}" class="ticker-link" title="View ${escapeHtml(signal.asset)} company profile">${escapeHtml(signal.asset)}</a>`;
         line.innerHTML = `<strong>${escapeHtml(signal.author)}</strong> ${escapeHtml(signal.action.toLowerCase())}${signal.moveSize ? ` <span class="move-size">by ${escapeHtml(signal.moveSize)}</span>` : ""}. <span class="feed-exposure">Now: <strong class="accent-dim">${escapeHtml(formatExposure(signal.newExposure))}</strong></span>`;
