@@ -1918,6 +1918,30 @@ button .material-symbols-outlined { font-size: 17px; }
   /* Mobile: regular tab panel */
 }
 
+@media (max-width: 767px) {
+  .profile-panel-wrap,
+  .settings-panel-wrap {
+    position: fixed;
+    top: calc(56px + 26px);
+    left: 0;
+    right: 0;
+    bottom: 64px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: var(--bg);
+    z-index: 45;
+    padding-top: 1rem;
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  body.file-mode .profile-panel-wrap,
+  body.file-mode .settings-panel-wrap,
+  body.insecure-mode .profile-panel-wrap,
+  body.insecure-mode .settings-panel-wrap {
+    top: calc(56px + 26px + 40px);
+  }
+}
+
 /* ── Toast ── */
 .toast {
   position: fixed;
