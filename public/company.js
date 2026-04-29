@@ -221,15 +221,23 @@ async function loadCompanyPage() {
   }
 }
 
+const ISIN_RE = /^[A-Z]{2}[A-Z0-9]{10}$/;
+
 function renderHero(company) {
   const resolvedTicker = company?.ticker || ticker;
-  document.title = `${resolvedTicker} - Exposure`;
-  getElement("topTicker").textContent = resolvedTicker;
-  getElement("heroTicker").textContent = resolvedTicker;
+  const isISIN = ISIN_RE.test(resolvedTicker);
 
-  const name = company?.name || resolvedTicker;
-  getElement("topName").textContent = name;
-  getElement("heroName").textContent = name;
+  // For ISIN pages: company name is the primary label, ISIN is secondary
+  // For ticker pages: ticker is the primary label, company name is secondary
+  const secName = company?.name || null;
+  const primaryLabel = isISIN ? (secName || displayName || resolvedTicker) : resolvedTicker;
+  const secondaryLabel = isISIN ? resolvedTicker : (secName || "");
+
+  document.title = `${primaryLabel} - Exposure`;
+  getElement("topTicker").textContent = primaryLabel;
+  getElement("heroTicker").textContent = primaryLabel;
+  getElement("topName").textContent = secondaryLabel;
+  getElement("heroName").textContent = secondaryLabel;
 
   const badges = [];
   if (company?.exchange) badges.push({ label: company.exchange, className: "badge-blue" });
@@ -241,6 +249,9 @@ function renderHero(company) {
     .join("");
 
   const infos = [];
+  if (isISIN) {
+    infos.push({ label: "ISIN", value: escapeHtml(resolvedTicker) });
+  }
   if (company?.cik) {
     infos.push({
       label: "CIK",
