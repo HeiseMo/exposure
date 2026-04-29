@@ -376,14 +376,14 @@ class ExposureStore {
     }));
   }
 
-  addCompanyReport(ticker, { title, contentHtml, source, reportType = 'sec_analysis' }) {
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
+  addCompanyReport(ticker, { id, title, contentHtml, source, reportType = 'sec_analysis', generatedAt }) {
+    const reportId = id || crypto.randomUUID();
+    const now = generatedAt || new Date().toISOString();
     this.db.prepare(`
       INSERT INTO company_reports (id, ticker, report_type, title, content_html, source, generated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, ticker.toUpperCase(), reportType, title ?? null, contentHtml, source ?? null, now);
-    return id;
+    `).run(reportId, ticker.toUpperCase(), reportType, title ?? null, contentHtml, source ?? null, now);
+    return reportId;
   }
 
   async migrateLegacyGroupFiles() {

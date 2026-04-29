@@ -9,6 +9,7 @@ let promptText = null;
 let pendingRefreshTimer = null;
 let pollingAttemptCount = 0;
 let aiStatusLoaded = false;
+let currentReports = [];
 
 const FINANCIALS_RETRYABLE_STATUSES = new Set([404, 425, 503, 504]);
 const FINANCIALS_NOT_FOUND_STATUS = 422;
@@ -327,6 +328,7 @@ function renderFilings(filings) {
 
 function renderReports(reports) {
   const list = getElement("reportsList");
+  currentReports = Array.isArray(reports) ? reports.slice() : [];
   if (!reports.length) {
     list.innerHTML = '<div class="empty-state">No reports yet. Generate one above.</div>';
     return;
@@ -423,8 +425,15 @@ async function generateReport() {
       }
     } else {
       setStatus("ai", "ready", "AI status: ready");
+      if (data?.report) {
+        renderReports([data.report, ...currentReports.filter((report) => report.id !== data.report.id)]);
+      }
       showToast("Report generated.");
-      await loadCompanyPage();
+      try {
+        await loadCompanyPage();
+      } catch {
+        showToast("Report saved, but the page refresh failed.");
+      }
     }
   } catch {
     showToast("Request failed.");

@@ -284,13 +284,20 @@ app.post("/api/companies/:ticker/reports/generate", async (req, res) => {
 
     if (!contentHtml) return res.status(502).json({ error: "LM Studio returned empty content" });
 
-    const id = store.addCompanyReport(ticker, {
+    const generatedAt = new Date().toISOString();
+    const report = {
+      id: crypto.randomUUID(),
+      ticker,
+      reportType: "sec_analysis",
       title: `${ticker} AI Analysis`,
       contentHtml,
       source: `lm-studio:${model}`,
-    });
+      generatedAt,
+    };
 
-    res.status(201).json({ id, ticker });
+    store.addCompanyReport(ticker, report);
+
+    res.status(201).json({ report, ticker });
   } catch (err) {
     if (err.name === "TimeoutError") return res.status(504).json({ error: "LM Studio timed out after 120s" });
     res.status(503).json({ error: "Could not reach LM Studio", detail: err.message });
