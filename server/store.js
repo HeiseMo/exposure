@@ -424,7 +424,12 @@ class ExposureStore {
 }
 
 const POSTING_POLICIES = ["any-member", "owner-only"];
-const DEFAULT_SETTINGS = { name: "", postingPolicy: "any-member" };
+const DEFAULT_SETTINGS = {
+  name: "",
+  postingPolicy: "any-member",
+  lmStudioUrl: "",
+  lmStudioModel: "",
+};
 
 export function validateSettings(input) {
   if (!isPlainObject(input)) {
@@ -447,6 +452,25 @@ export function validateSettings(input) {
     normalized.postingPolicy = input.postingPolicy;
   }
 
+  if ("lmStudioUrl" in input) {
+    if (typeof input.lmStudioUrl !== "string") {
+      return { valid: false, error: "lmStudioUrl must be a string." };
+    }
+
+    const lmStudioUrl = normalizeLmStudioUrl(input.lmStudioUrl);
+    if (lmStudioUrl == null) {
+      return { valid: false, error: "lmStudioUrl must be a valid http(s) URL." };
+    }
+    normalized.lmStudioUrl = lmStudioUrl;
+  }
+
+  if ("lmStudioModel" in input) {
+    if (typeof input.lmStudioModel !== "string") {
+      return { valid: false, error: "lmStudioModel must be a string." };
+    }
+    normalized.lmStudioModel = input.lmStudioModel.trim().slice(0, 120);
+  }
+
   const unknown = Object.keys(input).filter(k => !(k in DEFAULT_SETTINGS));
   if (unknown.length) {
     return { valid: false, error: `Unknown settings keys: ${unknown.join(", ")}.` };
@@ -464,9 +488,29 @@ function parseSettings(settingsJson) {
       postingPolicy: POSTING_POLICIES.includes(raw.postingPolicy)
         ? raw.postingPolicy
         : DEFAULT_SETTINGS.postingPolicy,
+      lmStudioUrl: typeof raw.lmStudioUrl === "string" ? raw.lmStudioUrl : DEFAULT_SETTINGS.lmStudioUrl,
+      lmStudioModel: typeof raw.lmStudioModel === "string" ? raw.lmStudioModel : DEFAULT_SETTINGS.lmStudioModel,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function normalizeLmStudioUrl(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+
+  const withProtocol = /^[a-z]+:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+
+  try {
+    const parsed = new URL(withProtocol);
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    parsed.pathname = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return null;
   }
 }
 

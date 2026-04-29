@@ -11,6 +11,7 @@ const AVATAR_COLORS = [
 
 const DEFAULT_POSITION_SORT = { key: "allocation", direction: "desc" };
 const LEGACY_STORAGE_MIGRATION_KEY = "exposure.storage.scoped.migrated";
+const DEFAULT_LM_STUDIO_URL = "http://localhost:1234";
 
 let selectedMemberName = "";
 
@@ -100,6 +101,9 @@ const els = {
   circleOwnerSection: $("circleOwnerSection"),
   circleNameInput: $("circleNameInput"),
   postingPolicySelect: $("postingPolicySelect"),
+  lmStudioUrlInput: $("lmStudioUrlInput"),
+  lmStudioModelInput: $("lmStudioModelInput"),
+  lmStudioConnectLink: $("lmStudioConnectLink"),
   saveCircleSettingsBtn: $("saveCircleSettingsBtn"),
 };
 
@@ -198,6 +202,9 @@ function boot() {
     renderPortfolio();
     renderFeed();
   });
+  if (els.lmStudioUrlInput) {
+    els.lmStudioUrlInput.addEventListener("input", syncLmStudioConnectLink);
+  }
 
   // Segmented BUY/SELL toggle
   document.getElementById("tradeTypeGroup").addEventListener("click", e => {
@@ -1432,6 +1439,9 @@ async function loadCircleSettings() {
       const { settings } = await res.json();
       if (els.circleNameInput) els.circleNameInput.value = settings?.name || "";
       if (els.postingPolicySelect) els.postingPolicySelect.value = settings?.postingPolicy || "any-member";
+      if (els.lmStudioUrlInput) els.lmStudioUrlInput.value = settings?.lmStudioUrl || "";
+      if (els.lmStudioModelInput) els.lmStudioModelInput.value = settings?.lmStudioModel || "";
+      syncLmStudioConnectLink();
     }
   } catch {}
 }
@@ -1464,17 +1474,40 @@ async function saveCircleSettings() {
   if (!ownerToken) return toast("No owner token on this device.");
   const name = (els.circleNameInput?.value || "").trim().slice(0, 60);
   const postingPolicy = els.postingPolicySelect?.value || "any-member";
+  const lmStudioUrl = normalizeLmStudioUrl(els.lmStudioUrlInput?.value || "");
+  const lmStudioModel = (els.lmStudioModelInput?.value || "").trim().slice(0, 120);
   try {
     const res = await fetch(`/api/groups/${encodeURIComponent(groupId)}/settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", "x-circle-owner-token": ownerToken },
-      body: JSON.stringify({ settings: { name, postingPolicy }, reason: "Updated from settings panel" }),
+      body: JSON.stringify({
+        settings: { name, postingPolicy, lmStudioUrl, lmStudioModel },
+        reason: "Updated from settings panel",
+      }),
     });
     if (res.ok) toast("Circle settings saved.");
     else if (res.status === 403) toast("Owner token rejected — may have changed.");
     else toast("Failed to save settings.");
   } catch {
     toast("Save failed. Check your connection.");
+  }
+}
+
+function normalizeLmStudioUrl(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function syncLmStudioConnectLink() {
+  if (!els.lmStudioConnectLink) return;
+
+  const rawUrl = normalizeLmStudioUrl(els.lmStudioUrlInput?.value || "") || DEFAULT_LM_STUDIO_URL;
+  const href = /^[a-z]+:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`;
+
+  try {
+    const parsed = new URL(href);
+    els.lmStudioConnectLink.href = parsed.toString();
+  } catch {
+    els.lmStudioConnectLink.href = DEFAULT_LM_STUDIO_URL;
   }
 }
 

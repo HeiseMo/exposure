@@ -441,6 +441,51 @@
                 <option value="owner-only">Owner only</option>
               </select>
             </div>
+            <div class="settings-subsection">
+              <div class="field-label-caps">Local AI</div>
+              <p class="small settings-help">
+                Connect this circle to LM Studio with its OpenAI-compatible local server.
+                <a
+                  id="lmStudioSetupLink"
+                  class="inline-link"
+                  href="https://lmstudio.ai/docs/app/api/endpoints/openai"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Setup guide
+                </a>
+                <span aria-hidden="true">·</span>
+                <a
+                  id="lmStudioConnectLink"
+                  class="inline-link"
+                  href="http://localhost:1234"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open base URL
+                </a>
+              </p>
+              <div class="space-y" style="margin-top:0.55rem;">
+                <div>
+                  <label for="lmStudioUrlInput">LM Studio base URL</label>
+                  <input
+                    id="lmStudioUrlInput"
+                    type="url"
+                    inputmode="url"
+                    placeholder="http://localhost:1234"
+                    maxlength="160"
+                  />
+                </div>
+                <div>
+                  <label for="lmStudioModelInput">LM Studio model</label>
+                  <input
+                    id="lmStudioModelInput"
+                    placeholder="e.g. qwen3-8b-instruct"
+                    maxlength="120"
+                  />
+                </div>
+              </div>
+            </div>
             <button id="saveCircleSettingsBtn" class="secondary" style="font-size:0.82rem;">
               <span class="material-symbols-outlined">save</span>
               Save circle settings

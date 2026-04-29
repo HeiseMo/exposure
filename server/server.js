@@ -25,6 +25,8 @@ const dataDir = process.env.DATA_DIR || path.join(__dirname, "data");
 const dbPath = process.env.SQLITE_PATH || path.join(dataDir, "exposure.sqlite");
 const port = Number(process.env.PORT || 3000);
 const maxEventsPerGroup = Number(process.env.MAX_EVENTS_PER_GROUP || 5000);
+const DEFAULT_LM_STUDIO_URL = process.env.LM_STUDIO_URL || "http://localhost:1234";
+const DEFAULT_LM_STUDIO_MODEL = process.env.LM_STUDIO_MODEL || "local-model";
 
 const store = await createStore({
   dataDir,
@@ -149,9 +151,9 @@ app.get("/api/companies/:ticker", (req, res) => {
   res.json({ company, reports });
 });
 
-app.get("/api/ai/status", async (_req, res) => {
-  const lmUrl = process.env.LM_STUDIO_URL || "http://localhost:1234";
-  const model = process.env.LM_STUDIO_MODEL || "local-model";
+app.get("/api/ai/status", async (req, res) => {
+  const groupId = readOptionalGroupId(req);
+  const { lmUrl, model } = resolveLmStudioConfig(groupId);
 
   try {
     const statusRes = await fetch(`${lmUrl}/v1/models`, {
@@ -250,8 +252,8 @@ app.post("/api/companies/:ticker/reports/generate", async (req, res) => {
   const ticker = normalizeTicker(req.params.ticker);
   if (!ticker) return res.status(400).json({ error: "Invalid ticker" });
 
-  const lmUrl = process.env.LM_STUDIO_URL || "http://localhost:1234";
-  const model = process.env.LM_STUDIO_MODEL || "local-model";
+  const groupId = readOptionalGroupId(req);
+  const { lmUrl, model } = resolveLmStudioConfig(groupId);
 
   const company = store.getCompany(ticker);
   if (!company) return res.status(404).json({ error: "Company not found. Register it first." });
@@ -382,6 +384,30 @@ function normalizeGroup(value) {
   const groupId = String(value || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
   if (!groupId) throw Object.assign(new Error("Invalid group"), { status: 400 });
   return groupId.slice(0, 80);
+}
+
+function readOptionalGroupId(req) {
+  const candidate = typeof req.query.groupId === "string"
+    ? req.query.groupId
+    : typeof req.body?.groupId === "string"
+      ? req.body.groupId
+      : "";
+
+  if (!candidate.trim()) return null;
+
+  try {
+    return normalizeGroup(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function resolveLmStudioConfig(groupId) {
+  const settings = groupId ? store.getSettings(groupId)?.settings || {} : {};
+  return {
+    lmUrl: settings.lmStudioUrl || DEFAULT_LM_STUDIO_URL,
+    model: settings.lmStudioModel || DEFAULT_LM_STUDIO_MODEL,
+  };
 }
 
 function isUuidLike(value) {

@@ -12,9 +12,29 @@ let aiStatusLoaded = false;
 
 const FINANCIALS_RETRYABLE_STATUSES = new Set([404, 425, 503, 504]);
 const FINANCIALS_NOT_FOUND_STATUS = 422;
+const DEFAULT_GROUP_ID = "friends";
 
 function getElement(id) {
   return document.getElementById(id);
+}
+
+function normalizeGroup(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80);
+}
+
+function getActiveGroupId() {
+  const params = new URLSearchParams(location.search);
+  const fromUrl = normalizeGroup(params.get("groupId") || "");
+  if (fromUrl) return fromUrl;
+
+  const fromStorage = normalizeGroup(localStorage.getItem("exposure.groupId") || "");
+  return fromStorage || DEFAULT_GROUP_ID;
 }
 
 function setStatus(kind, state, message) {
@@ -96,7 +116,8 @@ async function refreshAiStatus() {
   setStatus("ai", "loading", aiStatusLoaded ? "AI status: refreshing" : "AI status: checking");
 
   try {
-    const { response, payload } = await fetchJson("/api/ai/status");
+    const params = new URLSearchParams({ groupId: getActiveGroupId() });
+    const { response, payload } = await fetchJson(`/api/ai/status?${params.toString()}`);
     if (!response.ok || !payload) {
       setStatus("ai", "error", "AI status: unavailable");
       aiStatusLoaded = true;
@@ -385,6 +406,7 @@ async function generateReport() {
     const res = await fetch(`/api/companies/${encodeURIComponent(ticker)}/reports/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ groupId: getActiveGroupId() }),
     });
     const data = await res.json();
 

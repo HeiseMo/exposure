@@ -754,6 +754,25 @@ select option { background: var(--surface-low); color: var(--text); }
 
 .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
 .space-y > * + * { margin-top: 0.65rem; }
+.settings-subsection {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid rgba(132, 149, 136, 0.18);
+}
+
+.settings-help {
+  margin-top: 0;
+}
+
+.inline-link {
+  color: var(--accent-dim);
+  text-decoration: none;
+}
+
+.inline-link:hover,
+.inline-link:focus-visible {
+  text-decoration: underline;
+}
 
 .row { display: flex; gap: 0.5rem; align-items: center; }
 .row > * { flex: 1; }
