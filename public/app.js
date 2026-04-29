@@ -10,6 +10,7 @@ const AVATAR_COLORS = [
 ];
 
 const DEFAULT_POSITION_SORT = { key: "allocation", direction: "desc" };
+const LEGACY_STORAGE_MIGRATION_KEY = "exposure.storage.scoped.migrated";
 
 let selectedMemberName = "";
 
@@ -94,22 +95,22 @@ const els = {
 
 const storage = {
   get signals() {
-    return readJson("exposure.signals", []);
+    return readJson(scopedStorageKey("exposure.signals"), []);
   },
   set signals(value) {
-    localStorage.setItem("exposure.signals", JSON.stringify(value));
+    localStorage.setItem(scopedStorageKey("exposure.signals"), JSON.stringify(value));
   },
   get positions() {
-    return readJson("exposure.positions", []);
+    return readJson(scopedStorageKey("exposure.positions"), []);
   },
   set positions(value) {
-    localStorage.setItem("exposure.positions", JSON.stringify(value));
+    localStorage.setItem(scopedStorageKey("exposure.positions"), JSON.stringify(value));
   },
   get remoteIds() {
-    return new Set(readJson("exposure.remoteIds", []));
+    return new Set(readJson(scopedStorageKey("exposure.remoteIds"), []));
   },
   set remoteIds(value) {
-    localStorage.setItem("exposure.remoteIds", JSON.stringify([...value]));
+    localStorage.setItem(scopedStorageKey("exposure.remoteIds"), JSON.stringify([...value]));
   },
   get positionSort() {
     const value = readJson("exposure.positionSort", DEFAULT_POSITION_SORT);
@@ -120,13 +121,28 @@ const storage = {
     localStorage.setItem("exposure.positionSort", JSON.stringify(value));
   },
   get lastSyncedAt() {
-    return localStorage.getItem("exposure.lastSyncedAt") || "";
+    return localStorage.getItem(scopedStorageKey("exposure.lastSyncedAt")) || "";
   },
   set lastSyncedAt(value) {
-    if (value) localStorage.setItem("exposure.lastSyncedAt", value);
-    else localStorage.removeItem("exposure.lastSyncedAt");
+    const key = scopedStorageKey("exposure.lastSyncedAt");
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
   },
 };
+
+function getActiveGroupId() {
+  const rawGroupId = els.groupId?.value || localStorage.getItem("exposure.groupId") || "friends";
+
+  try {
+    return normalizeGroup(rawGroupId);
+  } catch {
+    return "friends";
+  }
+}
+
+function scopedStorageKey(baseKey) {
+  return `${baseKey}:${getActiveGroupId()}`;
+}
 
 function boot() {
   syncEnvironmentState();
@@ -345,6 +361,9 @@ function enterNode() {
   localStorage.setItem("exposure.groupId", groupId);
   sessionStorage.setItem("exposure.passphrase", passphrase);
   updateNodeLink();
+  renderPortfolio();
+  renderFeed();
+  updateLastSyncedLabel();
 
   sessionStorage.setItem("exposure.unlocked", "1");
   syncNodeIdentityState();
@@ -616,6 +635,25 @@ function updateNodeLink() {
 }
 
 function migrateLegacyData() {
+  if (!localStorage.getItem(LEGACY_STORAGE_MIGRATION_KEY)) {
+    const legacyKeys = [
+      "exposure.signals",
+      "exposure.positions",
+      "exposure.remoteIds",
+      "exposure.lastSyncedAt",
+    ];
+
+    for (const key of legacyKeys) {
+      const legacyValue = localStorage.getItem(key);
+      const nextKey = scopedStorageKey(key);
+      if (legacyValue != null && localStorage.getItem(nextKey) == null) {
+        localStorage.setItem(nextKey, legacyValue);
+      }
+    }
+
+    localStorage.setItem(LEGACY_STORAGE_MIGRATION_KEY, "1");
+  }
+
   if (localStorage.getItem("exposure.positions.migrated")) return;
   localStorage.setItem("exposure.positions.migrated", "1");
   if (localStorage.getItem("exposure.seeded")) {
