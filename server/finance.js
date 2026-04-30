@@ -110,7 +110,7 @@ async function generateBaselineNarrative({ reportContext, lmUrl, model, timeoutM
     reportContext,
   });
   const raw = await callLmStudio({ lmUrl, model, prompt, timeoutMs, maxTokens: 2600 });
-  const parsed = parseJsonResponse(raw, "baseline narrative");
+  const parsed = parseBaselineNarrativeResponse(raw);
 
   return {
     bullCase: normalizePointList(parsed.bullCase, 6),
@@ -128,7 +128,7 @@ async function generateDebateNarrative({ reportContext, lmUrl, model, timeoutMs 
     timeoutMs,
     maxTokens: 1800,
   });
-  const bullParsed = parseJsonResponse(bullRaw, "bull debate");
+  const bullParsed = parseDebatePointsResponse(bullRaw, "bull debate");
   const bullCase = normalizePointList(bullParsed.points || bullParsed.bullCase, 6);
 
   const bearRaw = await callLmStudio({
@@ -138,7 +138,7 @@ async function generateDebateNarrative({ reportContext, lmUrl, model, timeoutMs 
     timeoutMs,
     maxTokens: 1800,
   });
-  const bearParsed = parseJsonResponse(bearRaw, "bear debate");
+  const bearParsed = parseDebatePointsResponse(bearRaw, "bear debate");
   const bearCase = normalizePointList(bearParsed.points || bearParsed.bearCase, 6);
 
   const committeeRaw = await callLmStudio({
@@ -153,7 +153,7 @@ async function generateDebateNarrative({ reportContext, lmUrl, model, timeoutMs 
     timeoutMs,
     maxTokens: 1600,
   });
-  const committeeParsed = parseJsonResponse(committeeRaw, "debate committee");
+  const committeeParsed = parseCommitteeResponse(committeeRaw);
 
   return {
     bullCase,
@@ -200,7 +200,7 @@ async function callLmStudio({ lmUrl, model, prompt, timeoutMs, maxTokens }) {
 }
 
 function parseJsonResponse(raw, label) {
-  const trimmed = String(raw || "").trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "");
+  const trimmed = unwrapModelText(raw);
   const candidates = [trimmed];
   const match = trimmed.match(/\{[\s\S]*\}/);
   if (match) candidates.push(match[0]);
@@ -214,6 +214,150 @@ function parseJsonResponse(raw, label) {
   }
 
   throw new FinanceError(`LM Studio returned invalid JSON for ${label}`, 502, trimmed.slice(0, 400));
+}
+
+function parseBaselineNarrativeResponse(raw) {
+  try {
+    return parseJsonResponse(raw, "baseline narrative");
+  } catch {
+    const text = unwrapModelText(raw);
+    const bullCase = extractSectionPoints(text, ["bull case", "bullish case", "bull"]);
+    const bearCase = extractSectionPoints(text, ["bear case", "bearish case", "bear"]);
+    const bottomLine = {
+      summary: extractSectionParagraph(text, ["summary", "bottom line", "verdict", "overall view"]),
+      keyTension: extractSectionParagraph(text, ["key tension", "main tension", "core tension", "risk vs reward"]),
+      investorTakeaway: extractSectionParagraph(text, ["investor takeaway", "takeaway", "conclusion", "final takeaway"]),
+    };
+
+    const genericPoints = extractBulletPoints(text);
+    const fallbackBull = bullCase.length ? bullCase : genericPoints.slice(0, 6);
+    const fallbackBear = bearCase.length ? bearCase : genericPoints.slice(6, 12);
+
+    return {
+      bullCase: fallbackBull,
+      bearCase: fallbackBear,
+      bottomLine,
+    };
+  }
+}
+
+function parseDebatePointsResponse(raw, label) {
+  try {
+    return parseJsonResponse(raw, label);
+  } catch {
+    const text = unwrapModelText(raw);
+    const points = extractSectionPoints(text, ["points", "bull case", "bear case", "analysis"]);
+    return { points: points.length ? points : extractBulletPoints(text) };
+  }
+}
+
+function parseCommitteeResponse(raw) {
+  try {
+    return parseJsonResponse(raw, "debate committee");
+  } catch {
+    const text = unwrapModelText(raw);
+    return {
+      summary: extractSectionParagraph(text, ["summary", "bottom line", "verdict", "overall view"]),
+      keyTension: extractSectionParagraph(text, ["key tension", "main tension", "core tension", "risk vs reward"]),
+      investorTakeaway: extractSectionParagraph(text, ["investor takeaway", "takeaway", "conclusion", "final takeaway"]),
+    };
+  }
+}
+
+function unwrapModelText(raw) {
+  return String(raw || "")
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "");
+}
+
+function extractSectionPoints(text, headings) {
+  const block = extractSectionBlock(text, headings);
+  if (!block) return [];
+
+  const bulletPoints = extractBulletPoints(block);
+  if (bulletPoints.length) return bulletPoints;
+
+  return block
+    .split(/\n+/)
+    .map((line) => sanitizePoint(line))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function extractSectionParagraph(text, headings) {
+  const block = extractSectionBlock(text, headings);
+  if (!block) return "";
+
+  return block
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line && !looksLikeHeading(line))
+    .join(" ");
+}
+
+function extractSectionBlock(text, headings) {
+  const lines = unwrapModelText(text).split(/\r?\n/);
+  const normalizedHeadings = headings.map(normalizeHeading);
+  let startIndex = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (isHeadingMatch(lines[i], normalizedHeadings)) {
+      startIndex = i + 1;
+      break;
+    }
+  }
+
+  if (startIndex < 0) return "";
+
+  const collected = [];
+  for (let i = startIndex; i < lines.length; i++) {
+    const line = lines[i];
+    if (collected.length && looksLikeHeading(line)) break;
+    collected.push(line);
+  }
+
+  return collected.join("\n").trim();
+}
+
+function extractBulletPoints(text) {
+  return unwrapModelText(text)
+    .split(/\r?\n/)
+    .map((line) => sanitizePoint(line))
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function sanitizePoint(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed) return "";
+  if (looksLikeHeading(trimmed)) return "";
+  const stripped = trimmed.replace(/^[-*+•]\s+/, "").replace(/^\d+[\).\-\s]+\s*/, "").trim();
+  if (!stripped || stripped.length < 8) return "";
+  return stripped;
+}
+
+function looksLikeHeading(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed) return false;
+  if (/^[A-Za-z][A-Za-z /&-]{1,40}:$/.test(trimmed)) return true;
+  return /^(bull|bear|summary|bottom line|verdict|key tension|investor takeaway|takeaway|conclusion)\b/i.test(trimmed);
+}
+
+function isHeadingMatch(line, normalizedHeadings) {
+  const normalizedLine = normalizeHeading(line);
+  if (!normalizedLine) return false;
+  return normalizedHeadings.some((heading) => normalizedLine === heading || normalizedLine.startsWith(`${heading} `));
+}
+
+function normalizeHeading(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[*_#`]/g, "")
+    .replace(/[:\-]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeBottomLine(input) {
