@@ -253,8 +253,20 @@ app.post("/api/companies/:ticker/reports/generate", async (req, res) => {
   const groupId = readOptionalGroupId(req);
   const { lmUrl, model } = resolveLmStudioConfig(groupId);
 
-  const company = store.getCompany(ticker);
+  let company = store.getCompany(ticker);
   if (!company) return res.status(404).json({ error: "Company not found. Register it first." });
+
+  if (!company.financials || !company.enrichedAt) {
+    try {
+      const enriched = await enrichCompany(ticker);
+      if (enriched) {
+        store.upsertCompany(ticker, enriched);
+        company = store.getCompany(ticker);
+      }
+    } catch (err) {
+      console.warn(`Inline SEC enrichment failed for ${ticker}:`, err.message);
+    }
+  }
 
   try {
     const { report, financials, prompt } = await generateCompanyReport({
