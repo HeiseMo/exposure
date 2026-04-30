@@ -414,7 +414,7 @@ function createDeterministicFallbackNarrative(reportContext, err) {
 }
 
 function buildNarrativePrompt({ mode, reportContext, bullCase = null, bearCase = null }) {
-  const { company, financials } = reportContext;
+  const { company, financials, validation } = reportContext;
   const templateSection = REPORT_TEMPLATE
     ? `\nReport template reference:\n${REPORT_TEMPLATE}\n`
     : "";
@@ -427,20 +427,38 @@ function buildNarrativePrompt({ mode, reportContext, bullCase = null, bearCase =
     `${row.label}: revenue=${formatMoney(row.revenue)}`
   )).join("\n");
 
-  const metricRows = financials.kpis.map((kpi) => (
+  const metricRows = financials.kpis.filter((kpi) => kpi.visible).map((kpi) => (
     `${kpi.label}: value=${kpi.valueText}, change=${kpi.changeText || "n/a"}`
   )).join("\n");
 
+  const latestPeriod = financials.latestReportedPeriod?.label || "Latest validated filing period unavailable";
+  const allowedFacts = [
+    "Revenue trend and growth rates present in the provided annual and quarterly rows",
+    "Gross profit and gross margin only if explicitly present in the provided rows",
+    "Operating income, net income, operating cash flow, capex, and free cash flow only if explicitly present",
+    "Cash, assets, liabilities, debt, shares outstanding, EPS, and current-ratio inputs only if explicitly present",
+    "Comparative statements limited to the provided year-over-year or period-over-period numbers",
+  ].join("\n");
+
+  const forbiddenClaims = [
+    "Do not mention market share, TAM, competitive position, moat, customers, contracts, regulation, antitrust, unionization, macro, or stock price action unless those facts are explicitly provided below.",
+    "Do not mention business segments like AWS, advertising, Prime, cloud, retail, or geography unless they are explicitly provided below.",
+    "If a claim cannot be tied directly to a supplied metric, omit it.",
+  ].join(" ");
+
   const constraints = [
     "Use only the provided SEC/XBRL-derived data.",
-    "Do not invent TAM, contracts, customers, market share, or price action.",
+    forbiddenClaims,
     "If data is missing, state that clearly instead of guessing.",
     "Do not recompute or override the provided KPI values.",
+    `The most recent validated filing period is: ${latestPeriod}.`,
+    validation.warnings.length ? `Known data limitations: ${validation.warnings.join(" ")}` : "No additional data limitations.",
   ].join(" ");
 
   if (mode === "debate") {
     return `You are the final investment committee writer for a filing-grounded company report.${templateSection}
 Company: ${company.name} (${company.ticker})${company.sector ? `, sector ${company.sector}` : ""}${company.exchange ? `, exchange ${company.exchange}` : ""}
+Most recent validated filing period: ${latestPeriod}
 
 Deterministic KPI snapshot:
 ${metricRows}
@@ -450,6 +468,9 @@ ${annualRows || "No annual data available."}
 
 Quarterly revenue:
 ${quarterlyRows || "No quarterly data available."}
+
+Allowed evidence categories:
+${allowedFacts}
 
 Bull case points:
 ${(bullCase || []).map((point, index) => `${index + 1}. ${point}`).join("\n")}
@@ -465,6 +486,7 @@ ${constraints}`;
 
   return `You are a filing-grounded investment analyst.${templateSection}
 Company: ${company.name} (${company.ticker})${company.sector ? `, sector ${company.sector}` : ""}${company.exchange ? `, exchange ${company.exchange}` : ""}
+Most recent validated filing period: ${latestPeriod}
 
 Deterministic KPI snapshot:
 ${metricRows}
@@ -474,6 +496,9 @@ ${annualRows || "No annual data available."}
 
 Quarterly revenue:
 ${quarterlyRows || "No quarterly data available."}
+
+Allowed evidence categories:
+${allowedFacts}
 
 Return valid JSON only in this exact shape:
 {
@@ -490,16 +515,17 @@ ${constraints}`;
 }
 
 function buildDebatePrompt(side, reportContext) {
-  const { company, financials } = reportContext;
+  const { company, financials, validation } = reportContext;
   const annualRows = financials.annual.map((row) => (
     `${row.year}: revenue=${formatMoney(row.revenue)}, grossProfit=${formatMoney(row.grossProfit)}, grossMargin=${formatPercent(safeDivide(row.grossProfit, row.revenue), 1)}, operatingIncome=${formatMoney(row.operatingIncome)}, netIncome=${formatMoney(row.netIncome)}, operatingCashFlow=${formatMoney(row.operatingCashFlow)}, capex=${formatMoney(row.capex)}, freeCashFlow=${formatMoney(computeFreeCashFlow(row))}, cash=${formatMoney(row.cash)}, assets=${formatMoney(row.assets)}, liabilities=${formatMoney(row.liabilities)}, debt=${formatMoney(row.debt)}`
   )).join("\n");
 
   const quarterlyRows = financials.quarterly.map((row) => `${row.label}: revenue=${formatMoney(row.revenue)}`).join("\n");
+  const latestPeriod = financials.latestReportedPeriod?.label || "Latest validated filing period unavailable";
 
   return `You are the ${side === "bull" ? "bullish" : "bearish"} side of an investment debate for ${company.name} (${company.ticker}).
 
-Use only the SEC/XBRL-derived data below. Do not invent business facts, macro commentary, or price action. If support is weak, say so and keep the claim narrow.
+Use only the SEC/XBRL-derived data below. The most recent validated filing period is ${latestPeriod}. Do not invent business facts, segment commentary, macro commentary, competitive positioning, regulatory claims, or price action. If support is weak, say so and keep the claim narrow.
 
 Annual data:
 ${annualRows || "No annual data available."}
@@ -507,10 +533,13 @@ ${annualRows || "No annual data available."}
 Quarterly revenue:
 ${quarterlyRows || "No quarterly data available."}
 
+Known data limitations:
+${validation.warnings.join(" ") || "None."}
+
 Return valid JSON only:
 {"points":["point1","point2","point3","point4","point5","point6"]}
 
-Write exactly 6 to 8 concise points with strong grounding in the supplied numbers.`;
+Write exactly 6 to 8 concise points with strong grounding in the supplied numbers. Every point must directly reference only the supplied financial evidence or explicitly mention that the evidence is limited.`;
 }
 
 function normalizeLegacyFinancials(financials) {
@@ -601,6 +630,8 @@ function deriveFinancialSummary(financials) {
 
   const latestAnnual = annual.at(-1) || null;
   const previousAnnual = annual.length > 1 ? annual.at(-2) : null;
+  const latestQuarter = quarterly.at(-1) || null;
+  const latestReportedPeriod = pickLatestReportedPeriod({ latestAnnual, latestQuarter });
   const latest = {
     cash: toNumber(financials.latest?.cash),
     assets: toNumber(financials.latest?.assets),
@@ -621,7 +652,7 @@ function deriveFinancialSummary(financials) {
   if (latest.sharesOutstanding == null && latestAnnual?.sharesOutstanding != null) latest.sharesOutstanding = latestAnnual.sharesOutstanding;
 
   const validation = buildValidationSummary({ annual, quarterly, latestAnnual, previousAnnual, latest });
-  const kpis = buildKpiCards({ latestAnnual, previousAnnual, latest });
+  const kpis = buildKpiCards({ latestAnnual, previousAnnual, latest, latestQuarter, latestReportedPeriod });
   const ratios = buildRatios({ latestAnnual, previousAnnual, latest });
   const balanceSnapshot = buildBalanceSnapshot({ latestAnnual, latest });
 
@@ -631,6 +662,8 @@ function deriveFinancialSummary(financials) {
     quarterly,
     latestAnnual,
     previousAnnual,
+    latestQuarter,
+    latestReportedPeriod,
     latest,
     kpis,
     ratios,
@@ -680,9 +713,16 @@ function buildValidationSummary({ annual, quarterly, latestAnnual, previousAnnua
   };
 }
 
-function buildKpiCards({ latestAnnual, previousAnnual, latest }) {
+function buildKpiCards({ latestAnnual, previousAnnual, latest, latestQuarter, latestReportedPeriod }) {
   return [
-    buildCard("Latest Revenue", latestAnnual?.revenue, yoyText(latestAnnual?.revenue, previousAnnual?.revenue)),
+    buildCard(
+      latestQuarter ? `Latest Reported Revenue (${latestQuarter.label})` : "Latest Revenue",
+      latestQuarter?.revenue ?? latestAnnual?.revenue,
+      latestQuarter
+        ? quarterReferenceText(latestQuarter)
+        : yoyText(latestAnnual?.revenue, previousAnnual?.revenue)
+    ),
+    buildTextCard("Latest Reported Period", latestReportedPeriod?.label || "—", Boolean(latestReportedPeriod?.label)),
     buildCard("Gross Profit", latestAnnual?.grossProfit, yoyText(latestAnnual?.grossProfit, previousAnnual?.grossProfit)),
     buildCard("Gross Margin", safeDivide(latestAnnual?.grossProfit, latestAnnual?.revenue), marginDeltaText(latestAnnual, previousAnnual, "grossProfit"), "percent"),
     buildCard("Operating Income", latestAnnual?.operatingIncome, yoyText(latestAnnual?.operatingIncome, previousAnnual?.operatingIncome)),
@@ -717,6 +757,35 @@ function buildRatios({ latestAnnual, previousAnnual, latest }) {
     buildMetricItem("Debt-to-Equity", formatMultiple(debtToEquity), debtToEquity != null),
     buildMetricItem("Cash Runway", cashRunway == null ? "&mdash;" : `${cashRunway.toFixed(1)} years`, cashRunway != null),
   ].filter((item) => item.visible);
+}
+
+function pickLatestReportedPeriod({ latestAnnual, latestQuarter }) {
+  const annualEnd = latestAnnual?.end ? new Date(latestAnnual.end).valueOf() : Number.NEGATIVE_INFINITY;
+  const quarterEnd = latestQuarter?.end ? new Date(latestQuarter.end).valueOf() : Number.NEGATIVE_INFINITY;
+
+  if (quarterEnd > annualEnd && latestQuarter) {
+    return {
+      type: "quarter",
+      label: latestQuarter.label || latestQuarter.end || "Latest quarter",
+      end: latestQuarter.end || null,
+    };
+  }
+  if (latestAnnual) {
+    return {
+      type: "annual",
+      label: latestAnnual.year ? `FY ${latestAnnual.year}` : "Latest fiscal year",
+      end: latestAnnual.end || null,
+    };
+  }
+  return null;
+}
+
+function quarterReferenceText(latestQuarter) {
+  if (!latestQuarter) return "—";
+  if (latestQuarter.end) {
+    return `Most recent filing period ended ${latestQuarter.end}`;
+  }
+  return "Most recent filing period";
 }
 
 function buildBalanceSnapshot({ latestAnnual, latest }) {
@@ -851,6 +920,29 @@ function renderReportHtml(reportContext, narrative) {
       color: var(--accent);
     }
     .badge.secondary { color: var(--text); background: #12121b; }
+    .meta-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .meta-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      background: #10101a;
+    }
+    .meta-card-label {
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .meta-card-value {
+      margin-top: 8px;
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
     section { margin-top: 26px; }
     h2 {
       color: var(--accent);
@@ -959,6 +1051,16 @@ function renderReportHtml(reportContext, narrative) {
         <span class="badge secondary">${escapeHtml([company.sector, company.exchange].filter(Boolean).join(" / ") || "SEC Filing Data")}</span>
       </div>
       <div class="subtitle">Investment Analysis · Based on SEC Filings</div>
+      <div class="meta-strip">
+        <div class="meta-card">
+          <div class="meta-card-label">Most Recent Filing Period</div>
+          <div class="meta-card-value">${escapeHtml(financials.latestReportedPeriod?.label || "Unavailable")}</div>
+        </div>
+        <div class="meta-card">
+          <div class="meta-card-label">Latest Quarterly Revenue</div>
+          <div class="meta-card-value">${financials.latestQuarter?.revenue != null ? formatMoney(financials.latestQuarter.revenue) : "&mdash;"}</div>
+        </div>
+      </div>
     </div>
 
     <section>
@@ -1086,6 +1188,17 @@ function buildCard(label, value, changeText, format = "money", fallbackText = nu
     valueClass: classForValue(format === "percent" ? percentToDisplay(value) : value),
     changeText: changeText || "—",
     changeClass: classForChange(changeText),
+    visible,
+  };
+}
+
+function buildTextCard(label, valueText, visible) {
+  return {
+    label,
+    valueText,
+    valueClass: "neutral",
+    changeText: "—",
+    changeClass: "neutral",
     visible,
   };
 }
