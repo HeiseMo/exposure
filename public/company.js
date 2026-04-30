@@ -84,7 +84,7 @@ function setPendingState(message, visible = true) {
   pendingNotice.style.display = visible ? "flex" : "none";
 }
 
-function syncActionButtons({ hasFinancials = false, isLoading = false } = {}) {
+function syncActionButtons({ hasFinancials = false, isLoading = false, disabledReason = "Waiting for SEC financial data" } = {}) {
   const copyPromptButton = getElement("copyPromptBtn");
   const generateButton = getElement("generateBtn");
   const retryButton = getElement("retrySecBtn");
@@ -92,7 +92,7 @@ function syncActionButtons({ hasFinancials = false, isLoading = false } = {}) {
 
   copyPromptButton.disabled = !hasFinancials;
   generateButton.disabled = isLoading || !hasFinancials;
-  generateButton.title = hasFinancials ? "" : "Waiting for SEC financial data";
+  generateButton.title = hasFinancials ? "" : disabledReason;
   if (retryButton) retryButton.disabled = isLoading;
   if (modeSelect) modeSelect.disabled = isLoading || !hasFinancials;
 }
@@ -100,6 +100,18 @@ function syncActionButtons({ hasFinancials = false, isLoading = false } = {}) {
 function getSelectedReportMode() {
   const select = getElement("reportModeSelect");
   return select?.value === "debate" ? "debate" : "baseline";
+}
+
+function buildBlockedGenerationMessage(validation) {
+  const blockingReasons = Array.isArray(validation?.blockingReasons) ? validation.blockingReasons : [];
+  if (blockingReasons.length) {
+    return `Report generation is blocked because SEC normalization is still missing ${blockingReasons.join(", ")}.`;
+  }
+
+  const warnings = Array.isArray(validation?.warnings) ? validation.warnings : [];
+  if (warnings.length) return warnings[0];
+
+  return "SEC filings were found, but the normalized financial snapshot is not complete enough to generate a trustworthy report yet.";
 }
 
 async function ensureCompanyRegistered(force = false) {
@@ -232,13 +244,13 @@ async function loadCompanyPage() {
       if (canGenerateReport) {
         setPendingState("", false);
       } else {
-        const warnings = Array.isArray(data.validation?.warnings) ? data.validation.warnings : [];
-        setPendingState(
-          warnings[0] || "SEC filings were found, but the normalized financial snapshot is not complete enough to generate a trustworthy report yet.",
-          true
-        );
+        setPendingState(buildBlockedGenerationMessage(data.validation), true);
       }
-      syncActionButtons({ hasFinancials: canGenerateReport, isLoading: false });
+      syncActionButtons({
+        hasFinancials: canGenerateReport,
+        isLoading: false,
+        disabledReason: buildBlockedGenerationMessage(data.validation),
+      });
       return;
     }
 

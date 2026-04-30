@@ -226,7 +226,18 @@ app.get("/api/companies/:ticker/financials", (req, res) => {
     filings: company.filings,
     prompt,
     canGenerate: Boolean(reportContext?.validation?.canGenerate && prompt),
-    validation: reportContext?.validation ?? null,
+    validation: {
+      ...(reportContext?.validation ?? {}),
+      blockingReasons: (reportContext?.validation?.missingCritical || []).map((field) => {
+        const labels = {
+          "latestAnnual.revenue": "latest annual revenue",
+          "latestAnnual.operatingIncome": "latest annual operating income",
+          "latestAnnual.netIncome": "latest annual net income",
+          "latestAnnual.operatingCashFlow": "latest annual operating cash flow",
+        };
+        return labels[field] || field;
+      }),
+    },
   });
 });
 
