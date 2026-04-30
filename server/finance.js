@@ -14,6 +14,18 @@ const REPORT_TEMPLATE = (() => {
 
 const PROMPT_VERSION = "finance-v1";
 const FINANCIAL_SNAPSHOT_VERSION = 2;
+const NARRATIVE_FALLBACK_POINT = "AI narrative is unavailable for this report version, so this section should be read alongside the deterministic SEC metrics above.";
+const BASELINE_JSON_SCHEMA = `{
+  "bullCase": ["point1", "point2", "point3", "point4", "point5", "point6"],
+  "bearCase": ["point1", "point2", "point3", "point4", "point5", "point6"],
+  "bottomLine": {
+    "summary": "...",
+    "keyTension": "...",
+    "investorTakeaway": "..."
+  }
+}`;
+const DEBATE_POINTS_JSON_SCHEMA = `{"points":["point1","point2","point3","point4","point5","point6"]}`;
+const COMMITTEE_JSON_SCHEMA = `{"summary":"...","keyTension":"...","investorTakeaway":"..."}`;
 
 export class FinanceError extends Error {
   constructor(message, status = 500, detail = "") {
@@ -38,6 +50,7 @@ export function buildNormalizedFinancials(company) {
 export function buildReportContext(company) {
   const normalizedFinancials = buildNormalizedFinancials(company);
   if (!normalizedFinancials) return null;
+  const validation = normalizedFinancials.validation || buildValidationSummary(normalizedFinancials);
 
   return {
     company: {
@@ -50,6 +63,7 @@ export function buildReportContext(company) {
       filings: Array.isArray(company.filings) ? company.filings : [],
     },
     financials: normalizedFinancials,
+    validation,
     promptVersion: PROMPT_VERSION,
     financialSnapshotVersion: normalizedFinancials.version || FINANCIAL_SNAPSHOT_VERSION,
   };
@@ -57,7 +71,7 @@ export function buildReportContext(company) {
 
 export function buildFinancialPrompt(ticker, company) {
   const context = buildReportContext(company);
-  if (!context) return "";
+  if (!context || !context.validation.canGenerate) return "";
   return buildNarrativePrompt({
     mode: "baseline",
     reportContext: context,
@@ -69,14 +83,24 @@ export async function generateCompanyReport({ company, lmUrl, model, mode = "bas
   if (!reportContext) {
     throw new FinanceError("No SEC financial data found for this ticker. It may not be a publicly traded US company.", 422);
   }
+  if (!reportContext.validation.canGenerate) {
+    throw new FinanceError("SEC data is incomplete for report generation. Wait for a fuller filing snapshot before generating a report.", 422);
+  }
 
   const normalizedMode = mode === "debate" ? "debate" : "baseline";
-  const narrative = normalizedMode === "debate"
-    ? await generateDebateNarrative({ reportContext, lmUrl, model, timeoutMs })
-    : await generateBaselineNarrative({ reportContext, lmUrl, model, timeoutMs });
+  const narrative = await generateNarrativeWithFallback({
+    reportContext,
+    lmUrl,
+    model,
+    timeoutMs,
+    mode: normalizedMode,
+  });
 
   const contentHtml = renderReportHtml(reportContext, narrative);
   const generatedAt = new Date().toISOString();
+  const source = narrative.meta.status === "ready"
+    ? `lm-studio:${model}`
+    : `deterministic-fallback:${model}`;
 
   return {
     report: {
@@ -85,11 +109,13 @@ export async function generateCompanyReport({ company, lmUrl, model, mode = "bas
       reportType: "sec_analysis",
       title: `${company.ticker} ${normalizedMode === "debate" ? "Debate" : "Analysis"}`,
       contentHtml,
-      source: `lm-studio:${model}`,
+      source,
       generatedAt,
       metadata: {
         generationMode: normalizedMode,
         artifacts: narrative.artifacts || null,
+        narrativeMeta: narrative.meta,
+        validation: reportContext.validation,
         promptVersion: PROMPT_VERSION,
         financialSnapshotVersion: reportContext.financialSnapshotVersion,
       },
@@ -104,44 +130,71 @@ export async function generateCompanyReport({ company, lmUrl, model, mode = "bas
   };
 }
 
+async function generateNarrativeWithFallback({ reportContext, lmUrl, model, timeoutMs, mode }) {
+  try {
+    return mode === "debate"
+      ? await generateDebateNarrative({ reportContext, lmUrl, model, timeoutMs })
+      : await generateBaselineNarrative({ reportContext, lmUrl, model, timeoutMs });
+  } catch (err) {
+    return createDeterministicFallbackNarrative(reportContext, err);
+  }
+}
+
 async function generateBaselineNarrative({ reportContext, lmUrl, model, timeoutMs }) {
   const prompt = buildNarrativePrompt({
     mode: "baseline",
     reportContext,
   });
-  const raw = await callLmStudio({ lmUrl, model, prompt, timeoutMs, maxTokens: 2600 });
-  const parsed = parseBaselineNarrativeResponse(raw);
+  const completion = await requestStructuredCompletion({
+    lmUrl,
+    model,
+    prompt,
+    timeoutMs,
+    maxTokens: 2600,
+    label: "baseline narrative",
+    schema: BASELINE_JSON_SCHEMA,
+    normalize: normalizeBaselinePayload,
+  });
 
   return {
-    bullCase: normalizePointList(parsed.bullCase, 6),
-    bearCase: normalizePointList(parsed.bearCase, 6),
-    bottomLine: normalizeBottomLine(parsed.bottomLine),
+    bullCase: completion.data.bullCase,
+    bearCase: completion.data.bearCase,
+    bottomLine: completion.data.bottomLine,
     artifacts: null,
+    meta: {
+      status: "ready",
+      parseMode: completion.parseMode,
+      retryCount: completion.retryCount,
+      warnings: [],
+    },
   };
 }
 
 async function generateDebateNarrative({ reportContext, lmUrl, model, timeoutMs }) {
-  const bullRaw = await callLmStudio({
+  const bullCompletion = await requestStructuredCompletion({
     lmUrl,
     model,
     prompt: buildDebatePrompt("bull", reportContext),
     timeoutMs,
     maxTokens: 1800,
+    label: "bull debate",
+    schema: DEBATE_POINTS_JSON_SCHEMA,
+    normalize: normalizeDebatePointsPayload,
   });
-  const bullParsed = parseDebatePointsResponse(bullRaw, "bull debate");
-  const bullCase = normalizePointList(bullParsed.points || bullParsed.bullCase, 6);
-
-  const bearRaw = await callLmStudio({
+  const bearCompletion = await requestStructuredCompletion({
     lmUrl,
     model,
     prompt: buildDebatePrompt("bear", reportContext),
     timeoutMs,
     maxTokens: 1800,
+    label: "bear debate",
+    schema: DEBATE_POINTS_JSON_SCHEMA,
+    normalize: normalizeDebatePointsPayload,
   });
-  const bearParsed = parseDebatePointsResponse(bearRaw, "bear debate");
-  const bearCase = normalizePointList(bearParsed.points || bearParsed.bearCase, 6);
 
-  const committeeRaw = await callLmStudio({
+  const bullCase = bullCompletion.data.points;
+  const bearCase = bearCompletion.data.points;
+  const committeeCompletion = await requestStructuredCompletion({
     lmUrl,
     model,
     prompt: buildNarrativePrompt({
@@ -152,19 +205,57 @@ async function generateDebateNarrative({ reportContext, lmUrl, model, timeoutMs 
     }),
     timeoutMs,
     maxTokens: 1600,
+    label: "debate committee",
+    schema: COMMITTEE_JSON_SCHEMA,
+    normalize: normalizeBottomLinePayload,
   });
-  const committeeParsed = parseCommitteeResponse(committeeRaw);
 
   return {
     bullCase,
     bearCase,
-    bottomLine: normalizeBottomLine(committeeParsed.bottomLine || committeeParsed),
+    bottomLine: committeeCompletion.data,
     artifacts: {
       bullCase,
       bearCase,
-      committee: normalizeBottomLine(committeeParsed.bottomLine || committeeParsed),
+      committee: committeeCompletion.data,
+    },
+    meta: {
+      status: "ready",
+      parseMode: [
+        bullCompletion.parseMode,
+        bearCompletion.parseMode,
+        committeeCompletion.parseMode,
+      ].join(","),
+      retryCount: bullCompletion.retryCount + bearCompletion.retryCount + committeeCompletion.retryCount,
+      warnings: [],
     },
   };
+}
+
+async function requestStructuredCompletion({ lmUrl, model, prompt, timeoutMs, maxTokens, label, schema, normalize }) {
+  const attempts = [];
+  let currentPrompt = prompt;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const raw = await callLmStudio({ lmUrl, model, prompt: currentPrompt, timeoutMs, maxTokens });
+
+    try {
+      const parsed = normalize(parseJsonResponse(raw, label));
+      return {
+        data: parsed,
+        parseMode: attempt === 1 ? "strict" : "json-repair",
+        retryCount: attempt - 1,
+      };
+    } catch (err) {
+      attempts.push(`${label} attempt ${attempt}: ${err.message}`);
+      if (attempt === 2) {
+        throw new FinanceError(`LM Studio returned invalid JSON for ${label}`, 502, attempts.join(" | ").slice(0, 500));
+      }
+      currentPrompt = buildJsonRepairPrompt({ raw, schema, label });
+    }
+  }
+
+  throw new FinanceError(`LM Studio returned invalid JSON for ${label}`, 502);
 }
 
 async function callLmStudio({ lmUrl, model, prompt, timeoutMs, maxTokens }) {
@@ -216,52 +307,20 @@ function parseJsonResponse(raw, label) {
   throw new FinanceError(`LM Studio returned invalid JSON for ${label}`, 502, trimmed.slice(0, 400));
 }
 
-function parseBaselineNarrativeResponse(raw) {
-  try {
-    return parseJsonResponse(raw, "baseline narrative");
-  } catch {
-    const text = unwrapModelText(raw);
-    const bullCase = extractSectionPoints(text, ["bull case", "bullish case", "bull"]);
-    const bearCase = extractSectionPoints(text, ["bear case", "bearish case", "bear"]);
-    const bottomLine = {
-      summary: extractSectionParagraph(text, ["summary", "bottom line", "verdict", "overall view"]),
-      keyTension: extractSectionParagraph(text, ["key tension", "main tension", "core tension", "risk vs reward"]),
-      investorTakeaway: extractSectionParagraph(text, ["investor takeaway", "takeaway", "conclusion", "final takeaway"]),
-    };
+function buildJsonRepairPrompt({ raw, schema, label }) {
+  return `Rewrite the following response as valid JSON only for ${label}.
 
-    const genericPoints = extractBulletPoints(text);
-    const fallbackBull = bullCase.length ? bullCase : genericPoints.slice(0, 6);
-    const fallbackBear = bearCase.length ? bearCase : genericPoints.slice(6, 12);
+Required schema:
+${schema}
 
-    return {
-      bullCase: fallbackBull,
-      bearCase: fallbackBear,
-      bottomLine,
-    };
-  }
-}
+Rules:
+- Return JSON only.
+- Do not include markdown fences.
+- Do not add commentary.
+- Preserve only grounded statements from the source response.
 
-function parseDebatePointsResponse(raw, label) {
-  try {
-    return parseJsonResponse(raw, label);
-  } catch {
-    const text = unwrapModelText(raw);
-    const points = extractSectionPoints(text, ["points", "bull case", "bear case", "analysis"]);
-    return { points: points.length ? points : extractBulletPoints(text) };
-  }
-}
-
-function parseCommitteeResponse(raw) {
-  try {
-    return parseJsonResponse(raw, "debate committee");
-  } catch {
-    const text = unwrapModelText(raw);
-    return {
-      summary: extractSectionParagraph(text, ["summary", "bottom line", "verdict", "overall view"]),
-      keyTension: extractSectionParagraph(text, ["key tension", "main tension", "core tension", "risk vs reward"]),
-      investorTakeaway: extractSectionParagraph(text, ["investor takeaway", "takeaway", "conclusion", "final takeaway"]),
-    };
-  }
+Source response:
+${unwrapModelText(raw)}`;
 }
 
 function unwrapModelText(raw) {
@@ -270,94 +329,6 @@ function unwrapModelText(raw) {
     .replace(/^```json\s*/i, "")
     .replace(/^```\s*/i, "")
     .replace(/\s*```$/i, "");
-}
-
-function extractSectionPoints(text, headings) {
-  const block = extractSectionBlock(text, headings);
-  if (!block) return [];
-
-  const bulletPoints = extractBulletPoints(block);
-  if (bulletPoints.length) return bulletPoints;
-
-  return block
-    .split(/\n+/)
-    .map((line) => sanitizePoint(line))
-    .filter(Boolean)
-    .slice(0, 8);
-}
-
-function extractSectionParagraph(text, headings) {
-  const block = extractSectionBlock(text, headings);
-  if (!block) return "";
-
-  return block
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter((line) => line && !looksLikeHeading(line))
-    .join(" ");
-}
-
-function extractSectionBlock(text, headings) {
-  const lines = unwrapModelText(text).split(/\r?\n/);
-  const normalizedHeadings = headings.map(normalizeHeading);
-  let startIndex = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    if (isHeadingMatch(lines[i], normalizedHeadings)) {
-      startIndex = i + 1;
-      break;
-    }
-  }
-
-  if (startIndex < 0) return "";
-
-  const collected = [];
-  for (let i = startIndex; i < lines.length; i++) {
-    const line = lines[i];
-    if (collected.length && looksLikeHeading(line)) break;
-    collected.push(line);
-  }
-
-  return collected.join("\n").trim();
-}
-
-function extractBulletPoints(text) {
-  return unwrapModelText(text)
-    .split(/\r?\n/)
-    .map((line) => sanitizePoint(line))
-    .filter(Boolean)
-    .slice(0, 12);
-}
-
-function sanitizePoint(line) {
-  const trimmed = String(line || "").trim();
-  if (!trimmed) return "";
-  if (looksLikeHeading(trimmed)) return "";
-  const stripped = trimmed.replace(/^[-*+•]\s+/, "").replace(/^\d+[\).\-\s]+\s*/, "").trim();
-  if (!stripped || stripped.length < 8) return "";
-  return stripped;
-}
-
-function looksLikeHeading(line) {
-  const trimmed = String(line || "").trim();
-  if (!trimmed) return false;
-  if (/^[A-Za-z][A-Za-z /&-]{1,40}:$/.test(trimmed)) return true;
-  return /^(bull|bear|summary|bottom line|verdict|key tension|investor takeaway|takeaway|conclusion)\b/i.test(trimmed);
-}
-
-function isHeadingMatch(line, normalizedHeadings) {
-  const normalizedLine = normalizeHeading(line);
-  if (!normalizedLine) return false;
-  return normalizedHeadings.some((heading) => normalizedLine === heading || normalizedLine.startsWith(`${heading} `));
-}
-
-function normalizeHeading(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[*_#`]/g, "")
-    .replace(/[:\-]+$/, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function normalizeBottomLine(input) {
@@ -370,20 +341,76 @@ function normalizeBottomLine(input) {
 }
 
 function normalizeParagraph(value) {
-  const text = String(value || "").replace(/\s+/g, " ").trim();
+  const text = sanitizeNarrativeText(value);
   return text || "Insufficient grounded filing data to support a strong conclusion beyond the reported SEC metrics.";
 }
 
 function normalizePointList(value, minimumLength = 6) {
   const points = Array.isArray(value)
-    ? value.map((entry) => String(entry || "").replace(/\s+/g, " ").trim()).filter(Boolean)
+    ? value.map((entry) => sanitizeNarrativeText(entry)).filter(Boolean)
     : [];
 
   const trimmed = points.slice(0, 8);
   while (trimmed.length < minimumLength) {
-    trimmed.push("Evidence is limited in the current SEC dataset, so this point should be treated cautiously.");
+    trimmed.push(NARRATIVE_FALLBACK_POINT);
   }
   return trimmed;
+}
+
+function normalizeBaselinePayload(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Baseline payload must be an object");
+  }
+  return {
+    bullCase: normalizePointList(input.bullCase, 6),
+    bearCase: normalizePointList(input.bearCase, 6),
+    bottomLine: normalizeBottomLine(input.bottomLine),
+  };
+}
+
+function normalizeDebatePointsPayload(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Debate payload must be an object");
+  }
+  return {
+    points: normalizePointList(input.points || input.bullCase || input.bearCase, 6),
+  };
+}
+
+function normalizeBottomLinePayload(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Bottom-line payload must be an object");
+  }
+  return normalizeBottomLine(input.bottomLine || input);
+}
+
+function createDeterministicFallbackNarrative(reportContext, err) {
+  const companyName = reportContext.company.name || reportContext.company.ticker;
+  const reason = err?.message || "AI narrative generation failed";
+  return {
+    bullCase: normalizePointList([
+      `${companyName}'s report still includes deterministic SEC-derived KPIs, annual financials, quarterly revenue, and balance-sheet metrics.`,
+      "Use the revenue, operating income, net income, cash flow, and capital spending trends as the primary evidence base.",
+      "If the company has consistent multi-year operating progress, that signal remains visible even without AI commentary.",
+    ], 6),
+    bearCase: normalizePointList([
+      "Narrative commentary was withheld because the AI response did not satisfy the required JSON contract.",
+      "Missing deterministic fields are called out in the report warnings and should narrow confidence in any conclusion.",
+      "Do not infer omitted metrics such as gross margin, leverage, or current ratio when the SEC dataset did not validate them.",
+    ], 6),
+    bottomLine: {
+      summary: "Narrative unavailable. Review the deterministic SEC-derived financial sections in this report.",
+      keyTension: "The financial dataset is available, but the AI narrative response was rejected because it did not meet the structured output contract.",
+      investorTakeaway: "Use the KPI grid, annual summary, quarterly trend, and balance-sheet snapshot directly until a validated narrative can be regenerated.",
+    },
+    artifacts: null,
+    meta: {
+      status: "degraded",
+      parseMode: "deterministic-only",
+      retryCount: 1,
+      warnings: [reason],
+    },
+  };
 }
 
 function buildNarrativePrompt({ mode, reportContext, bullCase = null, bearCase = null }) {
@@ -593,6 +620,7 @@ function deriveFinancialSummary(financials) {
   if (latest.debt == null && latestAnnual?.debt != null) latest.debt = latestAnnual.debt;
   if (latest.sharesOutstanding == null && latestAnnual?.sharesOutstanding != null) latest.sharesOutstanding = latestAnnual.sharesOutstanding;
 
+  const validation = buildValidationSummary({ annual, quarterly, latestAnnual, previousAnnual, latest });
   const kpis = buildKpiCards({ latestAnnual, previousAnnual, latest });
   const ratios = buildRatios({ latestAnnual, previousAnnual, latest });
   const balanceSnapshot = buildBalanceSnapshot({ latestAnnual, latest });
@@ -607,6 +635,48 @@ function deriveFinancialSummary(financials) {
     kpis,
     ratios,
     balanceSnapshot,
+    validation,
+  };
+}
+
+function buildValidationSummary({ annual, quarterly, latestAnnual, previousAnnual, latest }) {
+  const requiredFields = [
+    ["latestAnnual.revenue", latestAnnual?.revenue],
+    ["latestAnnual.operatingIncome", latestAnnual?.operatingIncome],
+    ["latestAnnual.netIncome", latestAnnual?.netIncome],
+    ["latestAnnual.operatingCashFlow", latestAnnual?.operatingCashFlow],
+  ];
+  const optionalFields = [
+    ["latestAnnual.grossProfit", latestAnnual?.grossProfit],
+    ["latest.cash", latest?.cash],
+    ["latest.assets", latest?.assets],
+    ["latest.liabilities", latest?.liabilities],
+    ["latest.debt", latest?.debt],
+    ["latest.sharesOutstanding", latest?.sharesOutstanding],
+    ["latest.currentAssets", latest?.currentAssets],
+    ["latest.currentLiabilities", latest?.currentLiabilities],
+    ["latestAnnual.rdExpense", latestAnnual?.rdExpense],
+  ];
+
+  const missingCritical = requiredFields.filter(([, value]) => value == null).map(([label]) => label);
+  const missingOptional = optionalFields.filter(([, value]) => value == null).map(([label]) => label);
+  const warnings = [];
+
+  if (annual.length < 3) warnings.push("Historical annual coverage is limited.");
+  if (quarterly.length < 4) warnings.push("Quarterly revenue coverage is limited.");
+  if (missingOptional.includes("latestAnnual.grossProfit")) warnings.push("Gross profit data is unavailable, so gross margin metrics are suppressed.");
+  if (missingOptional.includes("latest.debt")) warnings.push("Debt data is unavailable, so leverage conclusions are suppressed.");
+  if (missingOptional.includes("latest.sharesOutstanding")) warnings.push("Shares outstanding data is unavailable.");
+  if (missingOptional.includes("latest.currentAssets") || missingOptional.includes("latest.currentLiabilities")) {
+    warnings.push("Working-capital inputs are incomplete, so current-ratio metrics are suppressed.");
+  }
+  if (latestAnnual && previousAnnual == null) warnings.push("Prior-year comparison is unavailable for some change metrics.");
+
+  return {
+    canGenerate: annual.length >= 2 && missingCritical.length === 0,
+    missingCritical,
+    missingOptional,
+    warnings,
   };
 }
 
@@ -620,7 +690,7 @@ function buildKpiCards({ latestAnnual, previousAnnual, latest }) {
     buildCard("Cash & Equivalents", latest.cash, yoyText(latestAnnual?.cash, previousAnnual?.cash)),
     buildCard("Total Debt", latest.debt, yoyText(latestAnnual?.debt, previousAnnual?.debt), "money", latest.debt == null ? null : latest.debt < 1_000_000 ? "Near debt-free" : null),
     buildCard("Shares Outstanding", latest.sharesOutstanding, yoyText(latestAnnual?.sharesOutstanding, previousAnnual?.sharesOutstanding), "shares"),
-  ];
+  ].filter((card) => card.visible);
 }
 
 function buildRatios({ latestAnnual, previousAnnual, latest }) {
@@ -636,17 +706,17 @@ function buildRatios({ latestAnnual, previousAnnual, latest }) {
   const cashRunway = freeCashFlow != null && freeCashFlow < 0 ? safeDivide(latest.cash, Math.abs(freeCashFlow)) : null;
 
   return [
-    { label: "Revenue Growth (YoY)", valueText: formatPercent(revenueGrowth, 1) },
-    { label: "Gross Margin", valueText: formatPercent(grossMargin, 1) },
-    { label: "Operating Margin", valueText: formatPercent(operatingMargin, 1) },
-    { label: "Net Margin", valueText: formatPercent(netMargin, 1) },
-    { label: "R&D as % of Revenue", valueText: formatPercent(rdShare, 1) },
-    { label: "Operating Cash Flow", valueText: formatMoney(latestAnnual?.operatingCashFlow) },
-    { label: "Free Cash Flow", valueText: formatMoney(freeCashFlow) },
-    { label: "Current Ratio", valueText: formatMultiple(currentRatio) },
-    { label: "Debt-to-Equity", valueText: formatMultiple(debtToEquity) },
-    { label: "Cash Runway", valueText: cashRunway == null ? "&mdash;" : `${cashRunway.toFixed(1)} years` },
-  ];
+    buildMetricItem("Revenue Growth (YoY)", formatPercent(revenueGrowth, 1), revenueGrowth != null),
+    buildMetricItem("Gross Margin", formatPercent(grossMargin, 1), grossMargin != null),
+    buildMetricItem("Operating Margin", formatPercent(operatingMargin, 1), operatingMargin != null),
+    buildMetricItem("Net Margin", formatPercent(netMargin, 1), netMargin != null),
+    buildMetricItem("R&D as % of Revenue", formatPercent(rdShare, 1), rdShare != null),
+    buildMetricItem("Operating Cash Flow", formatMoney(latestAnnual?.operatingCashFlow), latestAnnual?.operatingCashFlow != null),
+    buildMetricItem("Free Cash Flow", formatMoney(freeCashFlow), freeCashFlow != null),
+    buildMetricItem("Current Ratio", formatMultiple(currentRatio), currentRatio != null),
+    buildMetricItem("Debt-to-Equity", formatMultiple(debtToEquity), debtToEquity != null),
+    buildMetricItem("Cash Runway", cashRunway == null ? "&mdash;" : `${cashRunway.toFixed(1)} years`, cashRunway != null),
+  ].filter((item) => item.visible);
 }
 
 function buildBalanceSnapshot({ latestAnnual, latest }) {
@@ -658,25 +728,30 @@ function buildBalanceSnapshot({ latestAnnual, latest }) {
   const netCash = cash != null && debt != null ? cash - debt : null;
 
   return [
-    { label: "Cash & Equivalents", valueText: formatMoney(cash) },
-    { label: "Total Debt", valueText: formatMoney(debt) },
-    { label: "Net Cash", valueText: formatMoney(netCash) },
-    { label: "Total Assets", valueText: formatMoney(assets) },
-    { label: "Total Liabilities", valueText: formatMoney(liabilities) },
-    { label: "Stockholders' Equity", valueText: formatMoney(equity) },
-    { label: "Inventory", valueText: formatMoney(latest.inventory) },
-    { label: "Accounts Receivable", valueText: formatMoney(latest.accountsReceivable) },
-    { label: "Latest EPS Diluted", valueText: latest.epsDiluted == null ? "&mdash;" : latest.epsDiluted.toFixed(2) },
-    { label: "Latest Fiscal Year", valueText: latestAnnual?.year || "&mdash;" },
-  ];
+    buildMetricItem("Cash & Equivalents", formatMoney(cash), cash != null),
+    buildMetricItem("Total Debt", formatMoney(debt), debt != null),
+    buildMetricItem("Net Cash", formatMoney(netCash), netCash != null),
+    buildMetricItem("Total Assets", formatMoney(assets), assets != null),
+    buildMetricItem("Total Liabilities", formatMoney(liabilities), liabilities != null),
+    buildMetricItem("Stockholders' Equity", formatMoney(equity), equity != null),
+    buildMetricItem("Inventory", formatMoney(latest.inventory), latest.inventory != null),
+    buildMetricItem("Accounts Receivable", formatMoney(latest.accountsReceivable), latest.accountsReceivable != null),
+    buildMetricItem("Latest EPS Diluted", latest.epsDiluted == null ? "&mdash;" : latest.epsDiluted.toFixed(2), latest.epsDiluted != null),
+    buildMetricItem("Latest Fiscal Year", latestAnnual?.year || "&mdash;", Boolean(latestAnnual?.year)),
+  ].filter((item) => item.visible);
 }
 
 function renderReportHtml(reportContext, narrative) {
-  const { company, financials } = reportContext;
+  const { company, financials, validation } = reportContext;
   const annualColumns = financials.annual.slice(-5);
   const quarterSeries = financials.quarterly.slice(-8);
   const maxQuarterRevenue = Math.max(...quarterSeries.map((row) => Math.abs(row.revenue || 0)), 0);
   const reportDate = new Date().toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+  const visibleKpis = financials.kpis.filter((kpi) => kpi.visible);
+  const balanceSnapshot = financials.balanceSnapshot.filter((item) => item.visible);
+  const ratioItems = financials.ratios.filter((item) => item.visible);
+  const validationWarnings = [...validation.warnings];
+  const narrativeWarnings = Array.isArray(narrative.meta?.warnings) ? narrative.meta.warnings : [];
 
   const annualTable = annualColumns.length >= 3
     ? `
@@ -825,6 +900,14 @@ function renderReportHtml(reportContext, narrative) {
       border-bottom: 1px solid rgba(255,255,255,0.06);
     }
     .metric-item span:first-child { color: var(--muted); }
+    .note-list { display: flex; flex-direction: column; gap: 10px; }
+    .note-item {
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #10101a;
+      border: 1px solid rgba(251, 191, 36, 0.16);
+      color: var(--text);
+    }
     .debate-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -881,7 +964,7 @@ function renderReportHtml(reportContext, narrative) {
     <section>
       <h2>KPI Grid</h2>
       <div class="kpi-grid">
-        ${financials.kpis.map((kpi) => `
+        ${visibleKpis.map((kpi) => `
           <div class="kpi-card">
             <div class="kpi-label">${escapeHtml(kpi.label)}</div>
             <div class="kpi-value ${kpi.valueClass}">${kpi.valueText}</div>
@@ -891,6 +974,18 @@ function renderReportHtml(reportContext, narrative) {
       </div>
     </section>
 
+    ${(validationWarnings.length || narrativeWarnings.length) ? `
+      <section>
+        <h2>Report Notes</h2>
+        <div class="section-card">
+          <div class="note-list">
+            ${validationWarnings.map((warning) => `<div class="note-item">${escapeHtml(warning)}</div>`).join("")}
+            ${narrativeWarnings.map((warning) => `<div class="note-item">${escapeHtml(warning)}</div>`).join("")}
+          </div>
+        </div>
+      </section>
+    ` : ""}
+
     <section>
       <h2>Annual Financial Summary</h2>
       <div class="section-card">${annualTable}</div>
@@ -898,33 +993,37 @@ function renderReportHtml(reportContext, narrative) {
 
     ${quarterlySection}
 
-    <section>
-      <h2>Balance Sheet Snapshot</h2>
-      <div class="section-card">
-        <div class="metric-list">
-          ${financials.balanceSnapshot.map((item) => `
-            <div class="metric-item">
-              <span>${escapeHtml(item.label)}</span>
-              <span>${item.valueText}</span>
-            </div>
-          `).join("")}
+    ${balanceSnapshot.length ? `
+      <section>
+        <h2>Balance Sheet Snapshot</h2>
+        <div class="section-card">
+          <div class="metric-list">
+            ${balanceSnapshot.map((item) => `
+              <div class="metric-item">
+                <span>${escapeHtml(item.label)}</span>
+                <span>${item.valueText}</span>
+              </div>
+            `).join("")}
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
+    ` : ""}
 
-    <section>
-      <h2>Key Financial Ratios</h2>
-      <div class="section-card">
-        <div class="metric-list">
-          ${financials.ratios.map((item) => `
-            <div class="metric-item">
-              <span>${escapeHtml(item.label)}</span>
-              <span>${item.valueText}</span>
-            </div>
-          `).join("")}
+    ${ratioItems.length ? `
+      <section>
+        <h2>Key Financial Ratios</h2>
+        <div class="section-card">
+          <div class="metric-list">
+            ${ratioItems.map((item) => `
+              <div class="metric-item">
+                <span>${escapeHtml(item.label)}</span>
+                <span>${item.valueText}</span>
+              </div>
+            `).join("")}
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
+    ` : ""}
 
     <section>
       <h2>Bull Case / Bear Case</h2>
@@ -960,11 +1059,12 @@ function renderReportHtml(reportContext, narrative) {
 }
 
 function renderAnnualMetricRow(label, annualColumns, valueGetter, format = "money") {
+  const values = annualColumns.map((row, index) => valueGetter(row, index));
+  if (!values.some((value) => value != null)) return "";
   return `
     <tr>
       <td>${escapeHtml(label)}</td>
-      ${annualColumns.map((row, index) => {
-        const value = valueGetter(row, index);
+      ${values.map((value) => {
         return `<td class="${classForValue(format === "percent" ? percentToDisplay(value) : value)}">${formatCellValue(value, format)}</td>`;
       }).join("")}
     </tr>
@@ -978,6 +1078,7 @@ function formatCellValue(value, format) {
 }
 
 function buildCard(label, value, changeText, format = "money", fallbackText = null) {
+  const visible = value != null || fallbackText != null;
   const valueText = fallbackText || (format === "percent" ? formatPercent(value, 1) : format === "shares" ? formatShares(value) : formatMoney(value));
   return {
     label,
@@ -985,7 +1086,21 @@ function buildCard(label, value, changeText, format = "money", fallbackText = nu
     valueClass: classForValue(format === "percent" ? percentToDisplay(value) : value),
     changeText: changeText || "—",
     changeClass: classForChange(changeText),
+    visible,
   };
+}
+
+function buildMetricItem(label, valueText, visible) {
+  return { label, valueText, visible };
+}
+
+function sanitizeNarrativeText(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/[<>]/.test(text)) return "";
+  if (/<!doctype html|<html|<body|<style|--[a-z-]+\s*:|meta charset|viewport/i.test(text)) return "";
+  if (/^[.#][a-z0-9_-]+\s*\{/i.test(text)) return "";
+  return text;
 }
 
 function buildQuarterLabel(fy, quarter, end) {
@@ -1073,6 +1188,8 @@ function percentToDisplay(value) {
 }
 
 function toNumber(value) {
+  if (value == null) return null;
+  if (typeof value === "string" && value.trim() === "") return null;
   return Number.isFinite(value) ? value : Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
