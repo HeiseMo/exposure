@@ -244,10 +244,9 @@ async function loadCompanyPage() {
 
     if (FINANCIALS_RETRYABLE_STATUSES.has(response.status)) {
       pollingAttemptCount += 1;
-      const retrySeconds = Math.min(8 + pollingAttemptCount * 2, 20);
-      setStatus("sec", "loading", `SEC status: loading · retry in ${retrySeconds}s`);
-      setPendingState(`SEC filings are still loading. Retrying in ${retrySeconds}s.`, true);
-      scheduleReload(retrySeconds * 1000);
+      setStatus("sec", "loading", "SEC status: loading");
+      setPendingState("SEC filings are still loading.", true);
+      scheduleReload(Math.min(8000 + pollingAttemptCount * 2000, 20000));
       return;
     }
 
@@ -259,8 +258,8 @@ async function loadCompanyPage() {
     renderFilings([]);
     syncActionButtons({ hasFinancials: false, isLoading: false });
     pollingAttemptCount += 1;
-    setStatus("sec", "loading", "SEC status: retry scheduled");
-    setPendingState("SEC lookup is still in progress. The page will retry automatically.", true);
+    setStatus("sec", "loading", "SEC status: loading");
+    setPendingState("SEC filings are still loading.", true);
     scheduleReload(Math.min(8000 + pollingAttemptCount * 2000, 20000));
   }
 }
