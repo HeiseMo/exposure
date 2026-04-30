@@ -220,7 +220,14 @@ app.get("/api/companies/:ticker/financials", (req, res) => {
   if (!company.financials) return res.status(422).json({ error: "No SEC financial data found for this ticker. It may not be a publicly traded US company." });
   const reportContext = buildReportContext(company);
   const prompt = buildFinancialPrompt(ticker, company);
-  res.json({ ticker, financials: reportContext?.financials ?? company.financials, filings: company.filings, prompt });
+  res.json({
+    ticker,
+    financials: reportContext?.financials ?? company.financials,
+    filings: company.filings,
+    prompt,
+    canGenerate: Boolean(reportContext?.validation?.canGenerate && prompt),
+    validation: reportContext?.validation ?? null,
+  });
 });
 
 app.post("/api/companies/:ticker/reports", (req, res) => {

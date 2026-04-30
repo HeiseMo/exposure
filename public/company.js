@@ -6,6 +6,7 @@ if (!ticker) {
 }
 
 let promptText = null;
+let canGenerateReport = false;
 let pendingRefreshTimer = null;
 let pollingAttemptCount = 0;
 let aiStatusLoaded = false;
@@ -166,6 +167,7 @@ async function retrySecFetch() {
   setStatus("sec", "loading", "SEC status: retrying");
   setPendingState("Retrying SEC EDGAR fetch for this ticker.", true);
   promptText = null;
+  canGenerateReport = false;
   pollingAttemptCount = 0;
   syncActionButtons({ hasFinancials: false, isLoading: true });
 
@@ -184,7 +186,7 @@ async function retrySecFetch() {
 async function loadCompanyPage() {
   if (!ticker) return;
 
-  syncActionButtons({ hasFinancials: Boolean(promptText), isLoading: false });
+  syncActionButtons({ hasFinancials: canGenerateReport, isLoading: false });
   if (!aiStatusLoaded) refreshAiStatus().catch(() => {});
 
   let company = null;
@@ -221,17 +223,27 @@ async function loadCompanyPage() {
     const { response, payload } = await fetchJson(`/api/companies/${encodeURIComponent(ticker)}/financials`);
     if (response.ok) {
       const data = payload || {};
-      promptText = data.prompt;
+      promptText = data.prompt || null;
+      canGenerateReport = Boolean(data.canGenerate && promptText);
       renderFilings(data.filings || []);
       pollingAttemptCount = 0;
       clearPendingRefreshTimer();
-      setPendingState("", false);
-      setStatus("sec", "ready", `SEC status: ready${(data.filings || []).length ? ` · ${(data.filings || []).length} filings` : ""}`);
-      syncActionButtons({ hasFinancials: true, isLoading: false });
+      setStatus("sec", canGenerateReport ? "ready" : "warning", `SEC status: ready${(data.filings || []).length ? ` · ${(data.filings || []).length} filings` : ""}`);
+      if (canGenerateReport) {
+        setPendingState("", false);
+      } else {
+        const warnings = Array.isArray(data.validation?.warnings) ? data.validation.warnings : [];
+        setPendingState(
+          warnings[0] || "SEC filings were found, but the normalized financial snapshot is not complete enough to generate a trustworthy report yet.",
+          true
+        );
+      }
+      syncActionButtons({ hasFinancials: canGenerateReport, isLoading: false });
       return;
     }
 
     promptText = null;
+    canGenerateReport = false;
     renderFilings([]);
     syncActionButtons({ hasFinancials: false, isLoading: false });
 
@@ -255,6 +267,7 @@ async function loadCompanyPage() {
     showToast(payload?.error || "SEC data is unavailable right now.");
   } catch {
     promptText = null;
+    canGenerateReport = false;
     renderFilings([]);
     syncActionButtons({ hasFinancials: false, isLoading: false });
     pollingAttemptCount += 1;
@@ -401,8 +414,8 @@ function toggleReportCard(card) {
 }
 
 async function copyPrompt() {
-  if (!promptText) {
-    showToast("No prompt available - waiting for SEC data.");
+  if (!canGenerateReport || !promptText) {
+    showToast("Report generation is not ready yet because the SEC financial snapshot is still incomplete.");
     return;
   }
 
@@ -417,8 +430,8 @@ async function copyPrompt() {
 
 async function generateReport() {
   const button = getElement("generateBtn");
-  if (!promptText) {
-    showToast("SEC data is still loading. Wait for filings before generating a report.");
+  if (!canGenerateReport || !promptText) {
+    showToast("SEC filings may be visible, but the normalized financial data is not complete enough for report generation yet.");
     return;
   }
 
