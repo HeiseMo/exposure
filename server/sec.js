@@ -9,8 +9,11 @@ let tickerCacheExpiry = 0;
 const USD_SERIES = {
   revenue: [
     "Revenues",
+    "NetSales",
     "RevenueFromContractWithCustomerExcludingAssessedTax",
     "SalesRevenueNet",
+    "SalesRevenueServicesNet",
+    "SalesRevenueGoodsNet",
     "RevenueFromContractWithCustomerIncludingAssessedTax",
   ],
   grossProfit: ["GrossProfit"],
@@ -49,8 +52,8 @@ const USD_SERIES = {
 
 const SHARE_SERIES = {
   sharesOutstanding: [
-    "CommonStockSharesOutstanding",
     "EntityCommonStockSharesOutstanding",
+    "CommonStockSharesOutstanding",
   ],
 };
 
@@ -121,17 +124,42 @@ async function lookupCIKByDisplayName(displayName) {
 }
 
 function extractUnitSeries(facts, concepts, units) {
+  let bestSeries = [];
+  let bestScore = null;
   for (const concept of concepts) {
     const metric = facts?.["us-gaap"]?.[concept];
     if (!metric?.units) continue;
     for (const unit of units) {
       const series = metric.units?.[unit];
       if (Array.isArray(series) && series.length) {
-        return sanitizeSeries(series);
+        const sanitized = sanitizeSeries(series);
+        const score = scoreSeries(sanitized);
+        if (compareSeriesScore(score, bestScore) > 0) {
+          bestSeries = sanitized;
+          bestScore = score;
+        }
       }
     }
   }
-  return [];
+  return bestSeries;
+}
+
+function scoreSeries(series) {
+  const latestEnd = series.reduce((max, entry) => {
+    const value = new Date(entry.end).valueOf();
+    return Number.isFinite(value) ? Math.max(max, value) : max;
+  }, 0);
+  const annualLikeCount = normalizeDurationSeries(series).filter((entry) => entry.durationKind === "full_year").length;
+  return { latestEnd, annualLikeCount, length: series.length };
+}
+
+function compareSeriesScore(a, b) {
+  if (!a && !b) return 0;
+  if (!a) return -1;
+  if (!b) return 1;
+  if (a.latestEnd !== b.latestEnd) return a.latestEnd - b.latestEnd;
+  if (a.annualLikeCount !== b.annualLikeCount) return a.annualLikeCount - b.annualLikeCount;
+  return a.length - b.length;
 }
 
 function sanitizeSeries(series) {
@@ -161,10 +189,6 @@ function durationDays(entry) {
   return Math.round((end - start) / 86_400_000) + 1;
 }
 
-function fiscalYear(entry) {
-  return String(entry?.fy || entry?.end?.slice(0, 4) || "");
-}
-
 function quarterNumber(entry) {
   const fp = String(entry?.fp || "").toUpperCase();
   if (fp === "Q1") return 1;
@@ -176,16 +200,31 @@ function quarterNumber(entry) {
 
 function pickPreferredEntry(entries) {
   return [...entries].sort((a, b) => {
+    const lagA = filingLagDays(a);
+    const lagB = filingLagDays(b);
+    const validA = lagA != null && lagA >= 0;
+    const validB = lagB != null && lagB >= 0;
+
+    if (validA && validB && lagA !== lagB) return lagA - lagB;
+    if (validA !== validB) return validA ? -1 : 1;
+
     const filedA = new Date(a.filed || a.end).valueOf();
     const filedB = new Date(b.filed || b.end).valueOf();
-    return filedB - filedA;
+    return filedA - filedB;
   })[0] || null;
+}
+
+function filingLagDays(entry) {
+  const filed = new Date(entry?.filed || entry?.end || 0);
+  const end = new Date(entry?.end || 0);
+  if (Number.isNaN(filed.valueOf()) || Number.isNaN(end.valueOf())) return null;
+  return Math.round((filed - end) / 86_400_000);
 }
 
 function buildAnnualDurationRecords(series) {
   const byYear = new Map();
   for (const entry of normalizeDurationSeries(series)) {
-    const year = fiscalYear(entry);
+    const year = String(entry?.end?.slice(0, 4) || "");
     if (!year || entry.durationKind !== "full_year") continue;
     const group = byYear.get(year) || [];
     group.push(entry);
@@ -201,96 +240,49 @@ function buildAnnualDurationRecords(series) {
     .slice(-6);
 }
 
-function buildAnnualInstantRecords(series) {
-  const byYear = new Map();
-  for (const entry of series) {
-    const year = fiscalYear(entry);
-    if (!year) continue;
-    const group = byYear.get(year) || [];
-    group.push(entry);
-    byYear.set(year, group);
+function buildAnnualInstantRecords(series, annualPeriods) {
+  const byEnd = new Map();
+  for (const period of annualPeriods) {
+    if (!period?.end) continue;
+    byEnd.set(period.end, { year: period.year, end: period.end, entries: [] });
   }
-  return [...byYear.entries()]
-    .map(([year, entries]) => {
-      const best = pickPreferredEntry(entries);
-      return best ? { year, end: best.end, value: best.val } : null;
+  for (const entry of series) {
+    const bucket = byEnd.get(entry.end);
+    if (!bucket) continue;
+    bucket.entries.push(entry);
+  }
+  return [...byEnd.values()]
+    .map((bucket) => {
+      const best = pickPreferredEntry(bucket.entries);
+      return best ? { year: bucket.year, end: bucket.end, value: best.val } : null;
     })
     .filter(Boolean)
     .sort((a, b) => a.year.localeCompare(b.year))
-    .slice(-6);
 }
 
 function buildQuarterlyDurationRecords(series, options = {}) {
-  const normalized = normalizeDurationSeries(series);
-  const grouped = new Map();
+  const normalized = normalizeDurationSeries(series)
+    .filter((entry) => entry.durationKind === "single_quarter");
+  const byEnd = new Map();
 
   for (const entry of normalized) {
-    const fy = fiscalYear(entry);
-    if (!fy || !entry.quarter && entry.durationKind !== "full_year") continue;
-    const bucket = grouped.get(fy) || {
-      q1Direct: [],
-      q1Ytd: [],
-      q2Direct: [],
-      q2Ytd: [],
-      q3Direct: [],
-      q3Ytd: [],
-      q4Direct: [],
-      fyTotal: [],
-    };
-
-    if (entry.durationKind === "full_year") {
-      bucket.fyTotal.push(entry);
-    } else if (entry.quarter === 1) {
-      if (entry.durationKind === "single_quarter" || entry.durationKind === "q1_ytd") bucket.q1Direct.push(entry);
-      if (entry.durationKind === "q1_ytd") bucket.q1Ytd.push(entry);
-    } else if (entry.quarter === 2) {
-      if (entry.durationKind === "single_quarter") bucket.q2Direct.push(entry);
-      if (entry.durationKind === "h1_ytd") bucket.q2Ytd.push(entry);
-    } else if (entry.quarter === 3) {
-      if (entry.durationKind === "single_quarter") bucket.q3Direct.push(entry);
-      if (entry.durationKind === "q3_ytd") bucket.q3Ytd.push(entry);
-    } else if (entry.quarter === 4 && entry.durationKind === "single_quarter") {
-      bucket.q4Direct.push(entry);
+    const current = byEnd.get(entry.end);
+    if (!current || new Date(entry.filed || entry.end) > new Date(current.filed || current.end)) {
+      byEnd.set(entry.end, entry);
     }
-
-    grouped.set(fy, bucket);
   }
 
-  const results = [];
-  for (const [fy, bucket] of [...grouped.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0])))) {
-    const q1Entry = pickPreferredEntry(bucket.q1Direct);
-    const q1YtdEntry = pickPreferredEntry(bucket.q1Ytd);
-    const q2DirectEntry = pickPreferredEntry(bucket.q2Direct);
-    const q2YtdEntry = pickPreferredEntry(bucket.q2Ytd);
-    const q3DirectEntry = pickPreferredEntry(bucket.q3Direct);
-    const q3YtdEntry = pickPreferredEntry(bucket.q3Ytd);
-    const q4DirectEntry = pickPreferredEntry(bucket.q4Direct);
-    const fyEntry = pickPreferredEntry(bucket.fyTotal);
-
-    const q1 = sanitizeDerivedQuarter(
-      q1Entry?.val ?? q1YtdEntry?.val ?? null,
-      options
-    );
-    const q2 = sanitizeDerivedQuarter(
-      q2DirectEntry?.val ?? subtractIfComparable(q2YtdEntry?.val, q1YtdEntry?.val ?? q1),
-      options
-    );
-    const q3 = sanitizeDerivedQuarter(
-      q3DirectEntry?.val ?? subtractIfComparable(q3YtdEntry?.val, q2YtdEntry?.val),
-      options
-    );
-    const q4 = sanitizeDerivedQuarter(
-      q4DirectEntry?.val ?? deriveFourthQuarter(fyEntry?.val, q1, q2, q3),
-      options
-    );
-
-    pushQuarterResult(results, fy, 1, q1Entry || q1YtdEntry, q1);
-    pushQuarterResult(results, fy, 2, q2DirectEntry || q2YtdEntry, q2);
-    pushQuarterResult(results, fy, 3, q3DirectEntry || q3YtdEntry, q3);
-    pushQuarterResult(results, fy, 4, q4DirectEntry || fyEntry, q4);
-  }
-
-  return results.slice(-8);
+  return [...byEnd.values()]
+    .sort((a, b) => String(a.end).localeCompare(String(b.end)))
+    .slice(-8)
+    .map((entry, index) => ({
+      fy: null,
+      quarter: entry.quarter,
+      end: entry.end,
+      label: buildQuarterLabel(entry, index),
+      revenue: sanitizeDerivedQuarter(entry.val, options),
+    }))
+    .filter((entry) => entry.revenue != null);
 }
 
 function normalizeDurationSeries(series) {
@@ -345,42 +337,36 @@ function isFullYearDuration(days) {
   return days != null && days >= 300 && days <= 380;
 }
 
-function subtractIfComparable(total, prior) {
-  if (total == null || prior == null) return null;
-  return total - prior;
-}
-
-function deriveFourthQuarter(fullYearTotal, q1, q2, q3) {
-  if (fullYearTotal == null || q1 == null || q2 == null || q3 == null) return null;
-  return fullYearTotal - q1 - q2 - q3;
-}
-
 function sanitizeDerivedQuarter(value, options = {}) {
   if (value == null || !Number.isFinite(value)) return null;
   if (options.requireNonNegative && value < 0) return null;
   return value;
 }
 
-function pushQuarterResult(results, fy, quarter, entry, value) {
-  if (!entry || value == null) return;
-  results.push({
-    fy,
-    quarter,
-    end: entry.end,
-    label: buildQuarterLabel(fy, quarter, entry.end),
-    revenue: value,
-  });
+function buildQuarterLabel(entry, fallbackIndex) {
+  if (entry?.quarter && entry?.end) return `Q${entry.quarter} ${entry.end.slice(0, 4)}`;
+  return entry?.end || `Quarter ${fallbackIndex + 1}`;
 }
 
-function buildQuarterLabel(fy, quarter, end) {
-  if (quarter && fy) return `Q${quarter} FY${String(fy).slice(-2)}`;
-  return end || "Quarter";
-}
-
-function latestValue(series) {
+function latestEntry(series, options = {}) {
   if (!series.length) return null;
   return [...series]
-    .sort((a, b) => new Date(b.end).valueOf() - new Date(a.end).valueOf())[0]?.val ?? null;
+    .filter((entry) => {
+      if (entry?.val == null) return false;
+      if (options.allowZero === false) return entry.val > 0;
+      return true;
+    })
+    .sort((a, b) => new Date(b.end).valueOf() - new Date(a.end).valueOf())[0] || null;
+}
+
+function latestValue(series, options = {}) {
+  return latestEntry(series, options)?.val ?? null;
+}
+
+function isEntryFreshEnough(entry, anchorEnd, maxAgeDays = 550) {
+  if (!entry?.end || !anchorEnd) return true;
+  const age = Math.round((new Date(anchorEnd) - new Date(entry.end)) / 86_400_000);
+  return Number.isFinite(age) ? age <= maxAgeDays : true;
 }
 
 function annualMap(records) {
@@ -437,6 +423,11 @@ function extractFinancials(facts) {
   const operatingCashFlowAnnual = buildAnnualDurationRecords(operatingCashFlowSeries);
   const capexAnnual = buildAnnualDurationRecords(capexSeries);
   const rdExpenseAnnual = buildAnnualDurationRecords(rdExpenseSeries);
+  const annualPeriods = revenueAnnual.length
+    ? revenueAnnual
+    : [grossProfitAnnual, operatingIncomeAnnual, netIncomeAnnual, operatingCashFlowAnnual, capexAnnual, rdExpenseAnnual]
+      .flat()
+      .sort((a, b) => String(a.year).localeCompare(String(b.year)));
 
   const cashSeries = extractUnitSeries(facts, USD_SERIES.cash, ["USD"]);
   const assetsSeries = extractUnitSeries(facts, USD_SERIES.assets, ["USD"]);
@@ -453,8 +444,11 @@ function extractFinancials(facts) {
   const debtNoncurrentSeries = extractUnitSeries(facts, USD_SERIES.debtNoncurrent, ["USD"]);
 
   const annualDebt = debtTotalSeries.length
-    ? buildAnnualInstantRecords(debtTotalSeries)
-    : combineAnnualSeries(buildAnnualInstantRecords(debtCurrentSeries), buildAnnualInstantRecords(debtNoncurrentSeries));
+    ? buildAnnualInstantRecords(debtTotalSeries, annualPeriods)
+    : combineAnnualSeries(
+        buildAnnualInstantRecords(debtCurrentSeries, annualPeriods),
+        buildAnnualInstantRecords(debtNoncurrentSeries, annualPeriods)
+      );
 
   const latestDebt = debtTotalSeries.length
     ? latestValue(debtTotalSeries)
@@ -467,22 +461,26 @@ function extractFinancials(facts) {
   assignAnnualMetric(annual, operatingCashFlowAnnual, "operatingCashFlow");
   assignAnnualMetric(annual, capexAnnual, "capex");
   assignAnnualMetric(annual, rdExpenseAnnual, "rdExpense");
-  assignAnnualMetric(annual, buildAnnualInstantRecords(cashSeries), "cash");
-  assignAnnualMetric(annual, buildAnnualInstantRecords(assetsSeries), "assets");
-  assignAnnualMetric(annual, buildAnnualInstantRecords(liabilitiesSeries), "liabilities");
+  assignAnnualMetric(annual, buildAnnualInstantRecords(cashSeries, annualPeriods), "cash");
+  assignAnnualMetric(annual, buildAnnualInstantRecords(assetsSeries, annualPeriods), "assets");
+  assignAnnualMetric(annual, buildAnnualInstantRecords(liabilitiesSeries, annualPeriods), "liabilities");
   assignAnnualMetric(annual, annualDebt, "debt");
-  assignAnnualMetric(annual, buildAnnualInstantRecords(sharesSeries), "sharesOutstanding");
+  assignAnnualMetric(annual, buildAnnualInstantRecords(sharesSeries, annualPeriods), "sharesOutstanding");
+
+  const annualRows = [...annual.values()].sort((a, b) => a.year.localeCompare(b.year)).slice(-6);
+  const latestAnnualEnd = annualRows.at(-1)?.end || null;
+  const latestSharesEntry = latestEntry(sharesSeries, { allowZero: false });
 
   return {
     version: 2,
-    annual: [...annual.values()].sort((a, b) => a.year.localeCompare(b.year)).slice(-6),
+    annual: annualRows,
     quarterly: buildQuarterlyDurationRecords(revenueSeries, { requireNonNegative: true }),
     latest: {
       cash: latestValue(cashSeries),
       assets: latestValue(assetsSeries),
       liabilities: latestValue(liabilitiesSeries),
       debt: latestDebt,
-      sharesOutstanding: latestValue(sharesSeries),
+      sharesOutstanding: isEntryFreshEnough(latestSharesEntry, latestAnnualEnd) ? latestSharesEntry?.val ?? null : null,
       inventory: latestValue(inventorySeries),
       accountsReceivable: latestValue(receivablesSeries),
       currentAssets: latestValue(currentAssetsSeries),
