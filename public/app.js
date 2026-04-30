@@ -39,6 +39,7 @@ const els = {
   syncBtn: $("syncBtn"),
   syncBtn2: $("syncBtn2"),
   exportBtn: $("exportBtn"),
+  exportPortfolioBtn: $("exportPortfolioBtn"),
   clearBtn: $("clearBtn"),
   nodeIdentityHint: $("nodeIdentityHint"),
   resetPortfolioBtn: $("resetPortfolioBtn"),
@@ -242,6 +243,7 @@ function boot() {
   els.mergeImportBtn.addEventListener("click", () => importPortfolio("merge"));
   els.clearBtn.addEventListener("click", clearFeed);
   els.exportBtn.addEventListener("click", exportFeed);
+  els.exportPortfolioBtn.addEventListener("click", exportPortfolio);
   els.syncBtn.addEventListener("click", syncFeed);
   els.syncBtn2.addEventListener("click", syncFeed);
   if (els.resetPortfolioBtn) els.resetPortfolioBtn.addEventListener("click", resetPortfolio);
@@ -1618,6 +1620,37 @@ async function exportFeed() {
   const a = Object.assign(document.createElement("a"), {
     href: url,
     download: `exposure-${groupId || "feed"}.json`,
+  });
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportPortfolio() {
+  const groupId = normalizeGroup(els.groupId.value);
+  const positions = sortPositions([...storage.positions], storage.positionSort);
+  const payload = {
+    app: "Exposure",
+    type: "portfolio",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    groupId,
+    displayName: localStorage.getItem("exposure.displayName") || "",
+    avatarColor: getAvatarColorIdx(),
+    positions: positions.map(p => ({
+      asset: p.asset,
+      quantity: p.quantity,
+      avgPrice: p.avgPrice,
+      markPrice: p.markPrice,
+      isin: p.isin,
+      updatedAt: p.updatedAt,
+    })),
+  };
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), {
+    href: url,
+    download: `exposure-portfolio-${groupId || "feed"}-${new Date().toISOString().slice(0, 10)}.json`,
   });
   a.click();
   URL.revokeObjectURL(url);
