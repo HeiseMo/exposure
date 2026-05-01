@@ -99,7 +99,9 @@ function syncActionButtons({ hasFinancials = false, isLoading = false, disabledR
 
 function getSelectedReportMode() {
   const select = getElement("reportModeSelect");
-  return select?.value === "debate" ? "debate" : "baseline";
+  if (select?.value === "debate") return "debate";
+  if (select?.value === "agentic") return "agentic";
+  return "baseline";
 }
 
 function buildBlockedGenerationMessage(validation) {
@@ -232,7 +234,8 @@ async function loadCompanyPage() {
   }
 
   try {
-    const { response, payload } = await fetchJson(`/api/companies/${encodeURIComponent(ticker)}/financials`);
+    const selectedMode = getSelectedReportMode();
+    const { response, payload } = await fetchJson(`/api/companies/${encodeURIComponent(ticker)}/financials?mode=${encodeURIComponent(selectedMode)}`);
     if (response.ok) {
       const data = payload || {};
       promptText = data.prompt || null;
@@ -513,6 +516,9 @@ function showToast(message) {
 getElement("copyPromptBtn").addEventListener("click", copyPrompt);
 getElement("generateBtn").addEventListener("click", generateReport);
 getElement("retrySecBtn").addEventListener("click", retrySecFetch);
+getElement("reportModeSelect").addEventListener("change", () => {
+  loadCompanyPage().catch(() => {});
+});
 
 syncActionButtons({ hasFinancials: false, isLoading: false });
 disableLocalServiceWorker();

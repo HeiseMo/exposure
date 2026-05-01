@@ -214,26 +214,39 @@ app.post("/api/companies/:ticker/register", (req, res) => {
 app.get("/api/companies/:ticker/financials", (req, res) => {
   const ticker = normalizeTicker(req.params.ticker);
   if (!ticker) return res.status(400).json({ error: "Invalid ticker" });
+  const mode = typeof req.query?.mode === "string" ? req.query.mode.trim().toLowerCase() : "baseline";
   const company = store.getCompany(ticker);
   if (!company) return res.status(404).json({ error: "Company not found. Register it first." });
   if (!company.enrichedAt) return res.status(404).json({ error: "Financial data not yet available. Check back after enrichment." });
   if (!company.financials) return res.status(422).json({ error: "No SEC financial data found for this ticker. It may not be a publicly traded US company." });
   const reportContext = buildReportContext(company);
-  const prompt = buildFinancialPrompt(ticker, company);
+  const prompt = buildFinancialPrompt(ticker, company, mode);
+  const canGenerate = Boolean(reportContext?.validation?.canGenerate && prompt);
   res.json({
     ticker,
     financials: reportContext?.financials ?? company.financials,
     filings: company.filings,
     prompt,
-    canGenerate: Boolean(reportContext?.validation?.canGenerate && prompt),
+    canGenerate,
+    researchReadiness: canGenerate
+      ? {
+        state: mode === "agentic" ? "finance-ready-external-optional" : "finance-ready",
+        message: mode === "agentic"
+          ? "Agentic mode can run now. External market, news, and social inputs may degrade gracefully if live feeds are unavailable."
+          : "Finance data is ready for report generation.",
+      }
+      : {
+        state: "finance-blocked",
+        message: "Finance normalization must be complete before any report mode can run.",
+      },
     validation: {
       ...(reportContext?.validation ?? {}),
       blockingReasons: (reportContext?.validation?.missingCritical || []).map((field) => {
         const labels = {
-          "latestAnnual.revenue": "latest annual revenue",
-          "latestAnnual.operatingIncome": "latest annual operating income",
-          "latestAnnual.netIncome": "latest annual net income",
-          "latestAnnual.operatingCashFlow": "latest annual operating cash flow",
+          "reportAnnual.revenue": "latest complete annual revenue",
+          "reportAnnual.operatingIncome": "latest complete annual operating income",
+          "reportAnnual.netIncome": "latest complete annual net income",
+          "reportAnnual.operatingCashFlow": "latest complete annual operating cash flow",
         };
         return labels[field] || field;
       }),
@@ -264,8 +277,8 @@ app.post("/api/companies/:ticker/reports/generate", async (req, res) => {
   const ticker = normalizeTicker(req.params.ticker);
   if (!ticker) return res.status(400).json({ error: "Invalid ticker" });
   const mode = typeof req.body?.mode === "string" ? req.body.mode.trim().toLowerCase() : "baseline";
-  if (!["baseline", "debate"].includes(mode)) {
-    return res.status(400).json({ error: "Invalid mode. Expected baseline or debate." });
+  if (!["baseline", "debate", "agentic"].includes(mode)) {
+    return res.status(400).json({ error: "Invalid mode. Expected baseline, debate, or agentic." });
   }
 
   const groupId = readOptionalGroupId(req);

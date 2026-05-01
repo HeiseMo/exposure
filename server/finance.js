@@ -12,7 +12,7 @@ const REPORT_TEMPLATE = (() => {
   }
 })();
 
-const PROMPT_VERSION = "finance-v1";
+const PROMPT_VERSION = "finance-v2-agentic";
 const FINANCIAL_SNAPSHOT_VERSION = 2;
 const NARRATIVE_FALLBACK_POINT = "AI narrative is unavailable for this report version, so this section should be read alongside the deterministic SEC metrics above.";
 const BASELINE_JSON_SCHEMA = `{
@@ -26,6 +26,21 @@ const BASELINE_JSON_SCHEMA = `{
 }`;
 const DEBATE_POINTS_JSON_SCHEMA = `{"points":["point1","point2","point3","point4","point5","point6"]}`;
 const COMMITTEE_JSON_SCHEMA = `{"summary":"...","keyTension":"...","investorTakeaway":"..."}`;
+const AGENT_NOTE_JSON_SCHEMA = `{
+  "summary":"...",
+  "keyPoints":["point1","point2","point3"],
+  "citations":[{"label":"...","url":"https://example.com","source":"news"}],
+  "confidence":"low|medium|high",
+  "warnings":["optional warning"]
+}`;
+const AGENT_ROLES = [
+  "fundamentals_agent",
+  "market_agent",
+  "news_agent",
+  "social_agent",
+  "bull_researcher",
+  "bear_researcher",
+];
 
 export class FinanceError extends Error {
   constructor(message, status = 500, detail = "") {
@@ -69,11 +84,11 @@ export function buildReportContext(company) {
   };
 }
 
-export function buildFinancialPrompt(ticker, company) {
+export function buildFinancialPrompt(ticker, company, mode = "baseline") {
   const context = buildReportContext(company);
   if (!context || !context.validation.canGenerate) return "";
-  return buildNarrativePrompt({
-    mode: "baseline",
+  return buildPromptPreview({
+    mode,
     reportContext: context,
   });
 }
@@ -87,7 +102,7 @@ export async function generateCompanyReport({ company, lmUrl, model, mode = "bas
     throw new FinanceError("SEC data is incomplete for report generation. Wait for a fuller filing snapshot before generating a report.", 422);
   }
 
-  const normalizedMode = mode === "debate" ? "debate" : "baseline";
+  const normalizedMode = ["baseline", "debate", "agentic"].includes(mode) ? mode : "baseline";
   const narrative = await generateNarrativeWithFallback({
     reportContext,
     lmUrl,
@@ -107,12 +122,13 @@ export async function generateCompanyReport({ company, lmUrl, model, mode = "bas
       id: crypto.randomUUID(),
       ticker: company.ticker,
       reportType: "sec_analysis",
-      title: `${company.ticker} ${normalizedMode === "debate" ? "Debate" : "Analysis"}`,
+      title: `${company.ticker} ${normalizedMode === "debate" ? "Debate" : normalizedMode === "agentic" ? "Agentic Analysis" : "Analysis"}`,
       contentHtml,
       source,
       generatedAt,
       metadata: {
         generationMode: normalizedMode,
+        researchMode: normalizedMode === "agentic" ? "six-agent" : normalizedMode === "debate" ? "debate" : "baseline",
         artifacts: narrative.artifacts || null,
         narrativeMeta: narrative.meta,
         validation: reportContext.validation,
@@ -120,11 +136,10 @@ export async function generateCompanyReport({ company, lmUrl, model, mode = "bas
         financialSnapshotVersion: reportContext.financialSnapshotVersion,
       },
     },
-    prompt: buildNarrativePrompt({
+    prompt: buildPromptPreview({
       mode: normalizedMode,
       reportContext,
-      bullCase: narrative.artifacts?.bullCase || null,
-      bearCase: narrative.artifacts?.bearCase || null,
+      narrative,
     }),
     financials: reportContext.financials,
   };
@@ -132,9 +147,13 @@ export async function generateCompanyReport({ company, lmUrl, model, mode = "bas
 
 async function generateNarrativeWithFallback({ reportContext, lmUrl, model, timeoutMs, mode }) {
   try {
-    return mode === "debate"
-      ? await generateDebateNarrative({ reportContext, lmUrl, model, timeoutMs })
-      : await generateBaselineNarrative({ reportContext, lmUrl, model, timeoutMs });
+    if (mode === "debate") {
+      return await generateDebateNarrative({ reportContext, lmUrl, model, timeoutMs });
+    }
+    if (mode === "agentic") {
+      return await generateAgenticNarrative({ reportContext, lmUrl, model, timeoutMs });
+    }
+    return await generateBaselineNarrative({ reportContext, lmUrl, model, timeoutMs });
   } catch (err) {
     return createDeterministicFallbackNarrative(reportContext, err);
   }
@@ -230,6 +249,137 @@ async function generateDebateNarrative({ reportContext, lmUrl, model, timeoutMs 
       warnings: [],
     },
   };
+}
+
+async function generateAgenticNarrative({ reportContext, lmUrl, model, timeoutMs }) {
+  const researchContext = await buildResearchContext({
+    reportContext,
+    timeoutMs,
+  });
+  const warnings = [...researchContext.warnings];
+  const analystOutputs = {};
+  const completions = [];
+
+  for (const role of AGENT_ROLES.slice(0, 4)) {
+    try {
+      const completion = await requestStructuredCompletion({
+        lmUrl,
+        model,
+        prompt: buildResearchAgentPrompt({ role, reportContext, researchContext, analystOutputs }),
+        timeoutMs,
+        maxTokens: 1600,
+        label: role,
+        schema: AGENT_NOTE_JSON_SCHEMA,
+        normalize: normalizeResearchAgentPayload,
+      });
+      analystOutputs[role] = completion.data;
+      completions.push(completion);
+    } catch (err) {
+      if (role === "fundamentals_agent") throw err;
+      analystOutputs[role] = buildUnavailableAgentNote(role, err?.message || "External research source unavailable.");
+      warnings.push(`${humanizeAgentRole(role)} ran in reduced mode: ${err?.message || "unavailable"}`);
+    }
+  }
+
+  const bullCompletion = await requestStructuredCompletion({
+    lmUrl,
+    model,
+    prompt: buildResearchAgentPrompt({
+      role: "bull_researcher",
+      reportContext,
+      researchContext,
+      analystOutputs,
+    }),
+    timeoutMs,
+    maxTokens: 1800,
+    label: "bull researcher",
+    schema: AGENT_NOTE_JSON_SCHEMA,
+    normalize: normalizeResearcherPayload,
+  });
+  const bearCompletion = await requestStructuredCompletion({
+    lmUrl,
+    model,
+    prompt: buildResearchAgentPrompt({
+      role: "bear_researcher",
+      reportContext,
+      researchContext,
+      analystOutputs,
+    }),
+    timeoutMs,
+    maxTokens: 1800,
+    label: "bear researcher",
+    schema: AGENT_NOTE_JSON_SCHEMA,
+    normalize: normalizeResearcherPayload,
+  });
+  completions.push(bullCompletion, bearCompletion);
+
+  analystOutputs.bull_researcher = bullCompletion.data;
+  analystOutputs.bear_researcher = bearCompletion.data;
+
+  const committeeCompletion = await requestStructuredCompletion({
+    lmUrl,
+    model,
+    prompt: buildAgenticCommitteePrompt({
+      reportContext,
+      researchContext,
+      analystOutputs,
+      bullResearch: bullCompletion.data,
+      bearResearch: bearCompletion.data,
+    }),
+    timeoutMs,
+    maxTokens: 1800,
+    label: "agentic committee",
+    schema: COMMITTEE_JSON_SCHEMA,
+    normalize: normalizeBottomLinePayload,
+  });
+  completions.push(committeeCompletion);
+
+  return {
+    bullCase: bullCompletion.data.keyPoints,
+    bearCase: bearCompletion.data.keyPoints,
+    bottomLine: committeeCompletion.data,
+    researchBriefs: {
+      fundamentals: analystOutputs.fundamentals_agent,
+      market: analystOutputs.market_agent,
+      news: analystOutputs.news_agent,
+      social: analystOutputs.social_agent,
+    },
+    artifacts: {
+      researchContext: summarizeResearchContext(researchContext),
+      agentOutputs: analystOutputs,
+      committee: committeeCompletion.data,
+    },
+    meta: {
+      status: "ready",
+      parseMode: completions.map((completion) => completion.parseMode).join(","),
+      retryCount: completions.reduce((sum, completion) => sum + completion.retryCount, 0),
+      warnings,
+    },
+  };
+}
+
+function buildPromptPreview({ mode, reportContext, narrative = null }) {
+  if (mode === "debate") {
+    return buildNarrativePrompt({
+      mode: "debate",
+      reportContext,
+      bullCase: narrative?.bullCase || narrative?.artifacts?.bullCase || null,
+      bearCase: narrative?.bearCase || narrative?.artifacts?.bearCase || null,
+    });
+  }
+  if (mode === "agentic") {
+    return buildAgenticCommitteePrompt({
+      reportContext,
+      researchContext: null,
+      analystOutputs: narrative?.artifacts?.agentOutputs || null,
+      bullResearch: narrative?.artifacts?.agentOutputs?.bull_researcher || null,
+      bearResearch: narrative?.artifacts?.agentOutputs?.bear_researcher || null,
+    });
+  }
+  return buildNarrativePrompt({
+    mode: "baseline",
+    reportContext,
+  });
 }
 
 async function requestStructuredCompletion({ lmUrl, model, prompt, timeoutMs, maxTokens, label, schema, normalize }) {
@@ -384,6 +534,70 @@ function normalizeBottomLinePayload(input) {
   return normalizeBottomLine(input.bottomLine || input);
 }
 
+function normalizeResearchAgentPayload(input) {
+  return normalizeResearchNotePayload(input, 3);
+}
+
+function normalizeResearcherPayload(input) {
+  return normalizeResearchNotePayload(input, 6);
+}
+
+function normalizeResearchNotePayload(input, minimumKeyPoints) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Research payload must be an object");
+  }
+  return {
+    summary: normalizeParagraph(input.summary),
+    keyPoints: normalizeOptionalPointList(
+      input.keyPoints || input.key_points || input.points || input.theses,
+      minimumKeyPoints,
+      8,
+    ),
+    citations: normalizeCitationList(input.citations),
+    confidence: normalizeConfidence(input.confidence),
+    warnings: normalizeWarningList(input.warnings),
+  };
+}
+
+function normalizeOptionalPointList(value, minimumLength = 0, maximumLength = 6) {
+  const points = Array.isArray(value)
+    ? value.map((entry) => sanitizeNarrativeText(entry)).filter(Boolean)
+    : [];
+  const trimmed = points.slice(0, maximumLength);
+  while (trimmed.length < minimumLength) {
+    trimmed.push(NARRATIVE_FALLBACK_POINT);
+  }
+  return trimmed;
+}
+
+function normalizeCitationList(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => {
+    if (!entry || typeof entry !== "object") return null;
+    const label = sanitizeNarrativeText(entry.label || entry.title || entry.headline);
+    const url = sanitizeUrl(entry.url || entry.link);
+    const source = sanitizeNarrativeText(entry.source || entry.publisher || entry.type);
+    if (!label && !url) return null;
+    return {
+      label: label || source || "Source",
+      url,
+      source: source || null,
+    };
+  }).filter(Boolean).slice(0, 6);
+}
+
+function normalizeWarningList(value) {
+  return Array.isArray(value)
+    ? value.map((entry) => sanitizeNarrativeText(entry)).filter(Boolean).slice(0, 5)
+    : [];
+}
+
+function normalizeConfidence(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["low", "medium", "high"].includes(normalized)) return normalized;
+  return "medium";
+}
+
 function createDeterministicFallbackNarrative(reportContext, err) {
   const companyName = reportContext.company.name || reportContext.company.ticker;
   const reason = err?.message || "AI narrative generation failed";
@@ -411,6 +625,353 @@ function createDeterministicFallbackNarrative(reportContext, err) {
       warnings: [reason],
     },
   };
+}
+
+async function buildResearchContext({ reportContext, timeoutMs }) {
+  const externalResearch = await fetchExternalResearchContext({
+    company: reportContext.company,
+    timeoutMs,
+  });
+
+  return {
+    filings: (reportContext.company.filings || []).slice(0, 8).map((filing) => ({
+      form: filing.form || "Unknown",
+      date: filing.date || null,
+      accessionNumber: filing.accessionNumber || null,
+      url: filing.url || null,
+    })),
+    market: externalResearch.market,
+    news: externalResearch.news,
+    social: externalResearch.social,
+    warnings: externalResearch.warnings,
+  };
+}
+
+async function fetchExternalResearchContext({ company, timeoutMs }) {
+  const warnings = [];
+  const marketPromise = fetchYahooMarketSnapshot(company.ticker, timeoutMs)
+    .catch((err) => {
+      warnings.push(`Market snapshot unavailable: ${err.message}`);
+      return null;
+    });
+  const newsPromise = fetchGoogleNewsItems(company, timeoutMs)
+    .catch((err) => {
+      warnings.push(`News feed unavailable: ${err.message}`);
+      return [];
+    });
+  const socialPromise = fetchRedditSocialItems(company, timeoutMs)
+    .catch((err) => {
+      warnings.push(`Social feed unavailable: ${err.message}`);
+      return [];
+    });
+
+  const [market, news, social] = await Promise.all([marketPromise, newsPromise, socialPromise]);
+  return { market, news, social, warnings };
+}
+
+async function fetchYahooMarketSnapshot(ticker, timeoutMs) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=6mo&interval=1d&includePrePost=false`;
+  const response = await fetch(url, {
+    headers: { "User-Agent": "ExposureResearch/1.0" },
+    signal: AbortSignal.timeout(clampResearchTimeout(timeoutMs)),
+  });
+  if (!response.ok) {
+    throw new Error(`Yahoo Finance returned ${response.status}`);
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  const result = payload?.chart?.result?.[0];
+  const closes = (result?.indicators?.quote?.[0]?.close || []).filter((value) => Number.isFinite(value));
+  const latestClose = closes.at(-1) ?? null;
+  const oneMonthReference = closes.length > 21 ? closes[closes.length - 22] : closes[0] ?? null;
+  const sixMonthReference = closes[0] ?? null;
+
+  if (latestClose == null) {
+    throw new Error("No usable closing prices in Yahoo Finance chart response");
+  }
+
+  return {
+    source: "Yahoo Finance",
+    sourceUrl: `https://finance.yahoo.com/quote/${encodeURIComponent(ticker)}`,
+    currency: result?.meta?.currency || null,
+    exchangeName: result?.meta?.exchangeName || null,
+    latestClose,
+    oneMonthChange: safeGrowth(latestClose, oneMonthReference),
+    sixMonthChange: safeGrowth(latestClose, sixMonthReference),
+    sampleSize: closes.length,
+  };
+}
+
+async function fetchGoogleNewsItems(company, timeoutMs) {
+  const query = [`"${company.name}"`, company.ticker, "stock"].filter(Boolean).join(" ");
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+  const xml = await fetchTextContent(url, timeoutMs);
+  return parseRssItems(xml).slice(0, 6).map((item) => ({
+    title: item.title,
+    url: item.link,
+    publishedAt: item.pubDate,
+    source: item.source || "Google News",
+  }));
+}
+
+async function fetchRedditSocialItems(company, timeoutMs) {
+  const query = [`"${company.name}"`, company.ticker, "stock"].filter(Boolean).join(" OR ");
+  const url = `https://www.reddit.com/search.rss?q=${encodeURIComponent(query)}&sort=new`;
+  const xml = await fetchTextContent(url, timeoutMs);
+  return parseRssItems(xml).slice(0, 6).map((item) => ({
+    title: item.title.replace(/\s*:?\s*reddit$/i, "").trim(),
+    url: item.link,
+    publishedAt: item.pubDate,
+    source: item.source || "Reddit",
+  }));
+}
+
+async function fetchTextContent(url, timeoutMs) {
+  const response = await fetch(url, {
+    headers: { "User-Agent": "ExposureResearch/1.0" },
+    signal: AbortSignal.timeout(clampResearchTimeout(timeoutMs)),
+  });
+  if (!response.ok) {
+    throw new Error(`Feed returned ${response.status}`);
+  }
+  const text = await response.text();
+  if (!text.trim()) throw new Error("Feed returned empty body");
+  return text;
+}
+
+function clampResearchTimeout(timeoutMs) {
+  const numeric = Number(timeoutMs);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 8_000;
+  return Math.max(4_000, Math.min(numeric, 12_000));
+}
+
+function parseRssItems(xml) {
+  const items = [];
+  const body = String(xml || "");
+  const matches = body.matchAll(/<item>([\s\S]*?)<\/item>/gi);
+  for (const match of matches) {
+    const body = match[1];
+    items.push({
+      title: decodeHtmlEntities(extractXmlTag(body, "title")),
+      link: sanitizeUrl(decodeHtmlEntities(extractXmlTag(body, "link"))),
+      pubDate: decodeHtmlEntities(extractXmlTag(body, "pubDate")),
+      source: decodeHtmlEntities(extractXmlTag(body, "source")),
+    });
+  }
+  const entries = body.matchAll(/<entry>([\s\S]*?)<\/entry>/gi);
+  for (const match of entries) {
+    const entryBody = match[1];
+    items.push({
+      title: decodeHtmlEntities(extractXmlTag(entryBody, "title")),
+      link: sanitizeUrl(extractAtomLink(entryBody)),
+      pubDate: decodeHtmlEntities(extractXmlTag(entryBody, "updated") || extractXmlTag(entryBody, "published")),
+      source: decodeHtmlEntities(extractXmlTag(entryBody, "source")),
+    });
+  }
+  return items.filter((item) => item.title || item.link);
+}
+
+function extractXmlTag(xml, tagName) {
+  const match = String(xml || "").match(new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "i"));
+  const raw = match?.[1] || "";
+  return raw.replace(/^<!\[CDATA\[/, "").replace(/\]\]>$/, "").trim();
+}
+
+function extractAtomLink(xml) {
+  const match = String(xml || "").match(/<link[^>]+href="([^"]+)"/i);
+  return decodeHtmlEntities(match?.[1] || "");
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'");
+}
+
+function buildResearchAgentPrompt({ role, reportContext, researchContext, analystOutputs }) {
+  const roleConfig = {
+    fundamentals_agent: {
+      identity: "fundamentals analyst",
+      job: "Summarize the canonical SEC-derived financial picture, the strongest quantitative trends, and the data caveats without inventing business facts.",
+    },
+    market_agent: {
+      identity: "market context analyst",
+      job: "Use the optional live market snapshot to describe recent price context and momentum carefully. If the market snapshot is unavailable, say so plainly and keep the note narrow.",
+    },
+    news_agent: {
+      identity: "news analyst",
+      job: "Summarize the most relevant recent company and sector headlines from the supplied feed and filings metadata. Do not claim details beyond the headline-level evidence.",
+    },
+    social_agent: {
+      identity: "social sentiment analyst",
+      job: "Summarize the dominant retail or community sentiment themes from the supplied social feed. If the feed is sparse or noisy, say so explicitly.",
+    },
+    bull_researcher: {
+      identity: "bullish equity researcher",
+      job: "Build the strongest grounded bullish case you can using the four analyst notes plus the canonical finance context. Keep the case evidence-backed and explicitly mention uncertainty where support is limited.",
+    },
+    bear_researcher: {
+      identity: "bearish equity researcher",
+      job: "Build the strongest grounded bearish case you can using the four analyst notes plus the canonical finance context. Keep the case evidence-backed and explicitly mention uncertainty where support is limited.",
+    },
+  }[role];
+
+  const analystSection = analystOutputs && Object.keys(analystOutputs).length
+    ? Object.entries(analystOutputs).map(([agentRole, output]) => (
+      `${humanizeAgentRole(agentRole)}:\nSummary: ${output.summary}\nKey points:\n${output.keyPoints.map((point, index) => `${index + 1}. ${point}`).join("\n")}\nConfidence: ${output.confidence}\nWarnings: ${(output.warnings || []).join(" ") || "None."}`
+    )).join("\n\n")
+    : "No prior analyst notes yet.";
+
+  return `You are the ${roleConfig.identity} for Exposure's filing-grounded research pipeline.
+
+Your job:
+${roleConfig.job}
+
+Rules:
+- Exposure's deterministic SEC/XBRL numbers are the only authoritative financial statement values.
+- Do not invent or override revenue, debt, cash, EPS, guidance, valuation, or margin numbers.
+- You may discuss external context only if it appears in the supplied market/news/social items.
+- If an external quantitative fact is mentioned, frame it as external context rather than a core company KPI.
+- If evidence is unavailable, say so directly.
+
+Canonical company context:
+${serializeCanonicalContext(reportContext)}
+
+Recent SEC filing metadata:
+${formatResearchFilings(researchContext?.filings)}
+
+Optional market snapshot:
+${formatMarketResearch(researchContext?.market)}
+
+Optional news items:
+${formatFeedItems(researchContext?.news)}
+
+Optional social items:
+${formatFeedItems(researchContext?.social)}
+
+Available prior analyst notes:
+${analystSection}
+
+Return valid JSON only in this exact shape:
+${AGENT_NOTE_JSON_SCHEMA}`;
+}
+
+function buildAgenticCommitteePrompt({ reportContext, researchContext, analystOutputs, bullResearch, bearResearch }) {
+  const analystSection = analystOutputs && Object.keys(analystOutputs).length
+    ? Object.entries(analystOutputs)
+      .filter(([role]) => role !== "bull_researcher" && role !== "bear_researcher")
+      .map(([role, output]) => `${humanizeAgentRole(role)} summary: ${output.summary}\nKey points:\n${output.keyPoints.map((point, index) => `${index + 1}. ${point}`).join("\n")}`)
+      .join("\n\n")
+    : "Analyst notes unavailable.";
+
+  return `You are the final committee writer for Exposure's six-agent research mode.
+
+Use the deterministic SEC/XBRL financial context as the source of truth for company numbers. Use the analyst notes only for qualitative framing, catalysts, sentiment, and recent context. Do not change or recompute the provided company KPIs.
+
+Canonical company context:
+${serializeCanonicalContext(reportContext)}
+
+Recent SEC filing metadata:
+${formatResearchFilings(researchContext?.filings)}
+
+Analyst note summaries:
+${analystSection}
+
+Bull researcher:
+Summary: ${bullResearch?.summary || "Unavailable"}
+Key points:
+${(bullResearch?.keyPoints || []).map((point, index) => `${index + 1}. ${point}`).join("\n") || "No bull points."}
+
+Bear researcher:
+Summary: ${bearResearch?.summary || "Unavailable"}
+Key points:
+${(bearResearch?.keyPoints || []).map((point, index) => `${index + 1}. ${point}`).join("\n") || "No bear points."}
+
+Return valid JSON only in this exact shape:
+${COMMITTEE_JSON_SCHEMA}
+
+Requirements:
+- summary: concise overall verdict grounded in the supplied filing metrics and recent research context
+- keyTension: the sharpest unresolved debate between the bull and bear cases
+- investorTakeaway: what a careful investor should watch next without giving personalized advice`;
+}
+
+function serializeCanonicalContext(reportContext) {
+  const { company, financials, validation } = reportContext;
+  const metricRows = financials.kpis
+    .filter((kpi) => kpi.visible)
+    .map((kpi) => `${kpi.label}: ${kpi.valueText}${kpi.changeText && kpi.changeText !== "—" ? ` (${kpi.changeText})` : ""}`)
+    .join("\n");
+  const annualRows = financials.annual.map((row) => (
+    `${row.year}: revenue=${formatMoney(row.revenue)}, grossProfit=${formatMoney(row.grossProfit)}, operatingIncome=${formatMoney(row.operatingIncome)}, netIncome=${formatMoney(row.netIncome)}, operatingCashFlow=${formatMoney(row.operatingCashFlow)}, capex=${formatMoney(row.capex)}, cash=${formatMoney(row.cash)}, debt=${formatMoney(row.debt)}`
+  )).join("\n");
+  const quarterlyRows = financials.quarterly.map((row) => `${row.label}: revenue=${formatMoney(row.revenue)}`).join("\n");
+
+  return `Company: ${company.name} (${company.ticker})${company.sector ? `, sector ${company.sector}` : ""}${company.exchange ? `, exchange ${company.exchange}` : ""}
+Most recent validated filing period: ${financials.latestReportedPeriod?.label || "Unavailable"}
+
+Deterministic KPI snapshot:
+${metricRows || "No KPI rows available."}
+
+Annual rows:
+${annualRows || "No annual rows available."}
+
+Quarterly revenue rows:
+${quarterlyRows || "No quarterly rows available."}
+
+Known data limitations:
+${validation.warnings.join(" ") || "None."}`;
+}
+
+function formatResearchFilings(filings) {
+  if (!Array.isArray(filings) || filings.length === 0) return "No recent SEC filing metadata available.";
+  return filings.map((filing) => `${filing.date || "Unknown date"} · ${filing.form || "Unknown form"} · ${filing.accessionNumber || "No accession"}${filing.url ? ` · ${filing.url}` : ""}`).join("\n");
+}
+
+function formatMarketResearch(market) {
+  if (!market) return "Market snapshot unavailable.";
+  return [
+    `Source: ${market.source || "Unknown"}`,
+    market.exchangeName ? `Exchange: ${market.exchangeName}` : null,
+    `Latest close: ${formatQuoteValue(market.latestClose, market.currency)}`,
+    market.oneMonthChange != null ? `Approx. 1M change: ${formatPercent(market.oneMonthChange, 1)}` : null,
+    market.sixMonthChange != null ? `Approx. 6M change: ${formatPercent(market.sixMonthChange, 1)}` : null,
+    market.sourceUrl ? `Source URL: ${market.sourceUrl}` : null,
+  ].filter(Boolean).join("\n");
+}
+
+function formatFeedItems(items) {
+  if (!Array.isArray(items) || items.length === 0) return "No items available.";
+  return items.map((item) => `${item.publishedAt || "Unknown date"} · ${item.title || "Untitled"}${item.source ? ` · ${item.source}` : ""}${item.url ? ` · ${item.url}` : ""}`).join("\n");
+}
+
+function buildUnavailableAgentNote(role, reason) {
+  return {
+    summary: `${humanizeAgentRole(role)} is unavailable in this run, so this note is intentionally limited.`,
+    keyPoints: normalizeOptionalPointList([reason || "External research source unavailable."], 1, 3),
+    citations: [],
+    confidence: "low",
+    warnings: [reason || "Unavailable"],
+  };
+}
+
+function summarizeResearchContext(researchContext) {
+  return {
+    filingsCount: Array.isArray(researchContext?.filings) ? researchContext.filings.length : 0,
+    newsCount: Array.isArray(researchContext?.news) ? researchContext.news.length : 0,
+    socialCount: Array.isArray(researchContext?.social) ? researchContext.social.length : 0,
+    hasMarketSnapshot: Boolean(researchContext?.market),
+    warnings: researchContext?.warnings || [],
+  };
+}
+
+function humanizeAgentRole(role) {
+  return String(role || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function buildNarrativePrompt({ mode, reportContext, bullCase = null, bearCase = null }) {
@@ -630,6 +1191,8 @@ function deriveFinancialSummary(financials) {
 
   const latestAnnual = annual.at(-1) || null;
   const previousAnnual = annual.length > 1 ? annual.at(-2) : null;
+  const reportAnnual = findLatestCompleteAnnual(annual);
+  const previousReportAnnual = findPreviousComparableAnnual(annual, reportAnnual);
   const latestQuarter = quarterly.at(-1) || null;
   const latestReportedPeriod = pickLatestReportedPeriod({ latestAnnual, latestQuarter });
   const latest = {
@@ -645,16 +1208,31 @@ function deriveFinancialSummary(financials) {
     epsDiluted: toNumber(financials.latest?.epsDiluted),
   };
 
-  if (latest.cash == null && latestAnnual?.cash != null) latest.cash = latestAnnual.cash;
-  if (latest.assets == null && latestAnnual?.assets != null) latest.assets = latestAnnual.assets;
-  if (latest.liabilities == null && latestAnnual?.liabilities != null) latest.liabilities = latestAnnual.liabilities;
-  if (latest.debt == null && latestAnnual?.debt != null) latest.debt = latestAnnual.debt;
-  if (latest.sharesOutstanding == null && latestAnnual?.sharesOutstanding != null) latest.sharesOutstanding = latestAnnual.sharesOutstanding;
+  if (latest.cash == null && reportAnnual?.cash != null) latest.cash = reportAnnual.cash;
+  if (latest.assets == null && reportAnnual?.assets != null) latest.assets = reportAnnual.assets;
+  if (latest.liabilities == null && reportAnnual?.liabilities != null) latest.liabilities = reportAnnual.liabilities;
+  if (latest.debt == null && reportAnnual?.debt != null) latest.debt = reportAnnual.debt;
+  if (latest.sharesOutstanding == null && reportAnnual?.sharesOutstanding != null) latest.sharesOutstanding = reportAnnual.sharesOutstanding;
 
-  const validation = buildValidationSummary({ annual, quarterly, latestAnnual, previousAnnual, latest });
-  const kpis = buildKpiCards({ latestAnnual, previousAnnual, latest, latestQuarter, latestReportedPeriod });
-  const ratios = buildRatios({ latestAnnual, previousAnnual, latest });
-  const balanceSnapshot = buildBalanceSnapshot({ latestAnnual, latest });
+  const validation = buildValidationSummary({
+    annual,
+    quarterly,
+    latestAnnual,
+    previousAnnual,
+    reportAnnual,
+    previousReportAnnual,
+    latest,
+  });
+  const kpis = buildKpiCards({
+    latestAnnual: reportAnnual,
+    previousAnnual: previousReportAnnual,
+    latest,
+    latestQuarter,
+    latestReportedPeriod,
+    latestFiscalYearLabel: reportAnnual?.year || null,
+  });
+  const ratios = buildRatios({ latestAnnual: reportAnnual, previousAnnual: previousReportAnnual, latest });
+  const balanceSnapshot = buildBalanceSnapshot({ latestAnnual: reportAnnual, latest });
 
   return {
     version: financials.version || FINANCIAL_SNAPSHOT_VERSION,
@@ -662,6 +1240,8 @@ function deriveFinancialSummary(financials) {
     quarterly,
     latestAnnual,
     previousAnnual,
+    reportAnnual,
+    previousReportAnnual,
     latestQuarter,
     latestReportedPeriod,
     latest,
@@ -672,15 +1252,15 @@ function deriveFinancialSummary(financials) {
   };
 }
 
-function buildValidationSummary({ annual, quarterly, latestAnnual, previousAnnual, latest }) {
+function buildValidationSummary({ annual, quarterly, latestAnnual, previousAnnual, reportAnnual, previousReportAnnual, latest }) {
   const requiredFields = [
-    ["latestAnnual.revenue", latestAnnual?.revenue],
-    ["latestAnnual.operatingIncome", latestAnnual?.operatingIncome],
-    ["latestAnnual.netIncome", latestAnnual?.netIncome],
-    ["latestAnnual.operatingCashFlow", latestAnnual?.operatingCashFlow],
+    ["reportAnnual.revenue", reportAnnual?.revenue],
+    ["reportAnnual.operatingIncome", reportAnnual?.operatingIncome],
+    ["reportAnnual.netIncome", reportAnnual?.netIncome],
+    ["reportAnnual.operatingCashFlow", reportAnnual?.operatingCashFlow],
   ];
   const optionalFields = [
-    ["latestAnnual.grossProfit", latestAnnual?.grossProfit],
+    ["reportAnnual.grossProfit", reportAnnual?.grossProfit],
     ["latest.cash", latest?.cash],
     ["latest.assets", latest?.assets],
     ["latest.liabilities", latest?.liabilities],
@@ -688,7 +1268,7 @@ function buildValidationSummary({ annual, quarterly, latestAnnual, previousAnnua
     ["latest.sharesOutstanding", latest?.sharesOutstanding],
     ["latest.currentAssets", latest?.currentAssets],
     ["latest.currentLiabilities", latest?.currentLiabilities],
-    ["latestAnnual.rdExpense", latestAnnual?.rdExpense],
+    ["reportAnnual.rdExpense", reportAnnual?.rdExpense],
   ];
 
   const missingCritical = requiredFields.filter(([, value]) => value == null).map(([label]) => label);
@@ -697,16 +1277,19 @@ function buildValidationSummary({ annual, quarterly, latestAnnual, previousAnnua
 
   if (annual.length < 3) warnings.push("Historical annual coverage is limited.");
   if (quarterly.length < 4) warnings.push("Quarterly revenue coverage is limited.");
-  if (missingOptional.includes("latestAnnual.grossProfit")) warnings.push("Gross profit data is unavailable, so gross margin metrics are suppressed.");
+  if (missingOptional.includes("reportAnnual.grossProfit")) warnings.push("Gross profit data is unavailable, so gross margin metrics are suppressed.");
   if (missingOptional.includes("latest.debt")) warnings.push("Debt data is unavailable, so leverage conclusions are suppressed.");
   if (missingOptional.includes("latest.sharesOutstanding")) warnings.push("Shares outstanding data is unavailable.");
   if (missingOptional.includes("latest.currentAssets") || missingOptional.includes("latest.currentLiabilities")) {
     warnings.push("Working-capital inputs are incomplete, so current-ratio metrics are suppressed.");
   }
-  if (latestAnnual && previousAnnual == null) warnings.push("Prior-year comparison is unavailable for some change metrics.");
+  if (latestAnnual && reportAnnual && latestAnnual.year !== reportAnnual.year) {
+    warnings.push(`Using FY ${reportAnnual.year} as the latest complete annual basis because FY ${latestAnnual.year} is incomplete.`);
+  }
+  if (reportAnnual && previousReportAnnual == null) warnings.push("Prior-year comparison is unavailable for some change metrics.");
 
   return {
-    canGenerate: annual.length >= 2 && missingCritical.length === 0,
+    canGenerate: annual.length >= 2 && missingCritical.length === 0 && Boolean(reportAnnual),
     missingCritical,
     missingOptional,
     warnings,
@@ -810,6 +1393,32 @@ function buildBalanceSnapshot({ latestAnnual, latest }) {
   ].filter((item) => item.visible);
 }
 
+function hasCompleteAnnualMetrics(row) {
+  return Boolean(
+    row &&
+    row.revenue != null &&
+    row.operatingIncome != null &&
+    row.netIncome != null &&
+    row.operatingCashFlow != null
+  );
+}
+
+function findLatestCompleteAnnual(annual) {
+  for (let index = annual.length - 1; index >= 0; index -= 1) {
+    if (hasCompleteAnnualMetrics(annual[index])) return annual[index];
+  }
+  return annual.at(-1) || null;
+}
+
+function findPreviousComparableAnnual(annual, referenceAnnual) {
+  if (!referenceAnnual) return null;
+  const referenceIndex = annual.findIndex((row) => row.year === referenceAnnual.year && row.end === referenceAnnual.end);
+  for (let index = referenceIndex - 1; index >= 0; index -= 1) {
+    if (hasCompleteAnnualMetrics(annual[index])) return annual[index];
+  }
+  return referenceIndex > 0 ? annual[referenceIndex - 1] : null;
+}
+
 function renderReportHtml(reportContext, narrative) {
   const { company, financials, validation } = reportContext;
   const annualColumns = financials.annual.slice(-5);
@@ -821,6 +1430,14 @@ function renderReportHtml(reportContext, narrative) {
   const ratioItems = financials.ratios.filter((item) => item.visible);
   const validationWarnings = [...validation.warnings];
   const narrativeWarnings = Array.isArray(narrative.meta?.warnings) ? narrative.meta.warnings : [];
+  const researchBriefs = narrative.researchBriefs
+    ? [
+      ["Fundamentals Agent", narrative.researchBriefs.fundamentals],
+      ["Market Agent", narrative.researchBriefs.market],
+      ["News Agent", narrative.researchBriefs.news],
+      ["Social Agent", narrative.researchBriefs.social],
+    ].filter(([, brief]) => brief)
+    : [];
 
   const annualTable = annualColumns.length >= 3
     ? `
@@ -898,7 +1515,7 @@ function renderReportHtml(reportContext, narrative) {
       padding: 32px 18px 56px;
     }
     .wrap { max-width: 1120px; margin: 0 auto; }
-    .header-card, .section-card, .callout, .debate-card {
+    .header-card, .section-card, .callout, .debate-card, .research-card {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -1006,11 +1623,14 @@ function renderReportHtml(reportContext, narrative) {
       gap: 16px;
     }
     .debate-card { padding: 18px; }
+    .research-card { padding: 18px; }
     .debate-card.bull { border-color: rgba(74, 222, 128, 0.25); }
     .debate-card.bear { border-color: rgba(248, 113, 113, 0.25); }
-    .debate-card h3 { margin: 0 0 12px; }
+    .debate-card h3, .research-card h3 { margin: 0 0 12px; }
     .debate-card ul { margin: 0; padding-left: 0; list-style: none; }
+    .research-card ul { margin: 12px 0 0; padding-left: 18px; }
     .debate-card li { margin: 10px 0; padding-left: 24px; position: relative; }
+    .research-card li { margin: 8px 0; }
     .debate-card li::before {
       position: absolute;
       left: 0;
@@ -1025,6 +1645,36 @@ function renderReportHtml(reportContext, narrative) {
     }
     .callout h3 { margin: 0 0 12px; color: var(--warning); }
     .callout p { margin: 12px 0; }
+    .research-summary { color: var(--text); margin: 0 0 12px; }
+    .citation-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+    .citation-item {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .citation-item a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .citation-item a:hover { text-decoration: underline; }
+    .confidence-chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.12);
+      color: var(--muted);
+      font-size: 0.78rem;
+      padding: 4px 10px;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
     .footer {
       color: var(--muted);
       margin-top: 20px;
@@ -1094,6 +1744,15 @@ function renderReportHtml(reportContext, narrative) {
     </section>
 
     ${quarterlySection}
+
+    ${researchBriefs.length ? `
+      <section>
+        <h2>Research Mosaic</h2>
+        <div class="debate-grid">
+          ${researchBriefs.map(([label, brief]) => renderResearchBrief(label, brief)).join("")}
+        </div>
+      </section>
+    ` : ""}
 
     ${balanceSnapshot.length ? `
       <section>
@@ -1173,6 +1832,34 @@ function renderAnnualMetricRow(label, annualColumns, valueGetter, format = "mone
   `;
 }
 
+function renderResearchBrief(label, brief) {
+  const citations = Array.isArray(brief?.citations) ? brief.citations : [];
+  const warnings = Array.isArray(brief?.warnings) ? brief.warnings : [];
+  return `
+    <div class="research-card">
+      <div class="confidence-chip">${escapeHtml(brief?.confidence || "medium")} confidence</div>
+      <h3>${escapeHtml(label)}</h3>
+      <p class="research-summary">${escapeHtml(brief?.summary || "Research note unavailable.")}</p>
+      ${(brief?.keyPoints || []).length ? `<ul>${brief.keyPoints.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}
+      ${citations.length ? `
+        <div class="citation-list">
+          ${citations.map((citation) => `
+            <div class="citation-item">
+              ${citation.url ? `<a href="${escapeAttribute(citation.url)}" target="_blank" rel="noopener">${escapeHtml(citation.label)}</a>` : escapeHtml(citation.label)}
+              ${citation.source ? ` · ${escapeHtml(citation.source)}` : ""}
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
+      ${warnings.length ? `
+        <div class="citation-list">
+          ${warnings.map((warning) => `<div class="citation-item">${escapeHtml(warning)}</div>`).join("")}
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
 function formatCellValue(value, format) {
   if (format === "percent") return formatPercent(value, 1);
   if (format === "shares") return formatShares(value);
@@ -1214,6 +1901,12 @@ function sanitizeNarrativeText(value) {
   if (/<!doctype html|<html|<body|<style|--[a-z-]+\s*:|meta charset|viewport/i.test(text)) return "";
   if (/^[.#][a-z0-9_-]+\s*\{/i.test(text)) return "";
   return text;
+}
+
+function sanitizeUrl(value) {
+  const text = String(value || "").trim();
+  if (!/^https?:\/\//i.test(text)) return "";
+  return text.replace(/["'<>\s]/g, "");
 }
 
 function buildQuarterLabel(fy, quarter, end) {
@@ -1266,6 +1959,20 @@ function formatMoney(value) {
   if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1)}M`;
   if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}K`;
   return `${sign}$${abs.toFixed(0)}`;
+}
+
+function formatQuoteValue(value, currency = "USD") {
+  if (value == null || Number.isNaN(value)) return "&mdash;";
+  try {
+    const formatter = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: currency || "USD",
+      maximumFractionDigits: 2,
+    });
+    return formatter.format(value);
+  } catch {
+    return `$${Number(value).toFixed(2)}`;
+  }
 }
 
 function formatShares(value) {
